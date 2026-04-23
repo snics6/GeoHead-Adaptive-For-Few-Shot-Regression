@@ -769,10 +769,32 @@ v5 で発見した「**訓練時の rank-edge は GeoHead の signal 源，eval 
 - **B2 / P が T1 で `none` > `ridge`**: T1 は interpolation で $\beta_0$ が既に target-optimal に近いので，adaptation の variance が bias 削減を上回る．これは期待される挙動だが，`ridge_lambda` をより攻撃的に下げる余地はある．M4 では λ sweep を small set でも入れる．
 - **outer loss の重み**: `λ_D, α_cos, γ_scale` は design doc §10 の初期値のまま．`head_shift=4.0` が強いので DARE regularizer が `L_qry` と競合する可能性あり．M4 で小規模 λ_D sweep か M5 の ablation に回す．
 
-### M4: 実験本番
-- [ ] 2 test corpora × 5 support sizes × 20 seed × 3 methods
-- [ ] sample efficiency curve
-- [ ] head correction size の集計
+### M4: 実験本番（full-variance sample efficiency）
+- [x] **M4** main driver (`src/geohead/experiments/main.py`, `scripts/m4_main.py`)
+  - **目的**: M3 v8 で確立した設計を拡張し，**データ実現・モデル初期化・訓練確率性・eval サブサンプル**の 4 種の変動を同時に吸収した 95 % CI 付き sample efficiency curve を算出する（domain-generalization 論文の full-variance protocol, cf. Gulrajani & Lopez-Paz 2021）．
+  - **設定**（`M4Config` 既定値）:
+
+    | 項目 | M3 v8 | **M4** |
+    |---|---|---|
+    | learners | B1, B2, P | 同じ |
+    | test corpora | T1, T2 | 同じ |
+    | methods | none, ridge, geo, inner | 同じ |
+    | `k_shots` | (1, 4, 8, 16, 24) | 同じ |
+    | toy shifts / `encoder_p` / ε / preconditioned | v8 採用値 | 同じ |
+    | `baseline.outer_steps` | 1 500 | **5 000** |
+    | `geohead.outer_steps` | 1 500 | **5 000** |
+    | `eval.n_seeds` | 5 | **20** |
+    | **`n_train_seeds`** | 1（暗黙） | **3** |
+    | 1 セル当たりのサンプル数 | 5 | **60** = $3 \times 20$ |
+
+  - **seed 派生**（完全独立な訓練）: train 実行 $i = 0, 1, 2$ に対して `master_seed_i = master_seed + i \cdot 10^6`．この差分は `_run_pipeline_once` 内部で派生する副次 seed（`+1, +2, +3, +4, +1000..+1019`）の全てと衝突しない．各 $i$ で toy dataset・encoder init・warm-up shuffle・訓練 RNG・eval sub-sample の全てが独立．
+  - **集計**: `records.jsonl` は `train_seed` 列を持つ 7 200 行．`aggregate()` は `(corpus, k_shot, method)` で group-by するので `train_seed` は自然に収束され，各セルの CI は $n_{\text{train}} \cdot n_{\text{eval}} = 60$ 標本ベース．
+  - **出力物**: `results/m4_main/` 配下に `config.json`，`records.jsonl`，`aggregated.csv`，`plots/*.png`，`summary.md`，および `run_{0,1,2}/config.json, run_{0,1,2}/history/*.json`．
+  - **実行時間見積もり**（GPU, v8 の 55 s ベース）: `outer_steps` が 1 500 → 5 000 で $\times 3.3$，`n_train_seeds` が 1 → 3 で $\times 3$，合計 $\approx 9 \cdot 55 \text{ s} \approx 8$ 分．`--smoke` は $n_{\text{train}} = 2, \text{outer\_steps} = 50, n_{\text{eval}} = 2$ で $\approx 30$ s．
+  - **CLI**:
+    - `python -m scripts.m4_main --device cuda` で full run．
+    - `python -m scripts.m4_main --smoke` で end-to-end smoke．
+    - `--n-train-seeds`, `--n-seeds`, `--baseline-outer-steps`, `--geohead-outer-steps` で schedule 上書き可．
 
 ### M5: 分析と ablation
 - [ ] subspace 可視化（Gram spectra, cos similarity, principal angles）

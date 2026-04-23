@@ -80,6 +80,13 @@ __all__ = [
     "SanityConfig",
     "SanityResult",
     "run_sanity_check",
+    # Private helpers re-exported for ``geohead.experiments.main`` (M4).
+    "_run_pipeline_once",
+    "_aggregate_by_learner",
+    "_plot_all",
+    "_write_json",
+    "_write_jsonl",
+    "_write_csv",
 ]
 
 
@@ -302,11 +309,16 @@ def _make_gen(seed: int) -> torch.Generator:
 
 
 def _init_encoder_head(
-    cfg: SanityConfig, device: torch.device
+    cfg: SanityConfig,
+    device: torch.device,
+    master_seed: int | None = None,
 ) -> tuple[MLPEncoder, LinearHead]:
     # Deterministic init: torch.manual_seed is thread-local but sufficient
-    # inside this single-process experiment.
-    torch.manual_seed(cfg.master_seed + 1)
+    # inside this single-process experiment.  ``master_seed`` defaults to
+    # ``cfg.master_seed`` for backward compatibility, but M4 overrides it
+    # per train-seed.
+    seed = int(cfg.master_seed if master_seed is None else master_seed)
+    torch.manual_seed(seed + 1)
     encoder = MLPEncoder(
         d_x=cfg.toy.d_x, hidden=cfg.encoder_hidden, p=cfg.encoder_p
     )
@@ -385,6 +397,140 @@ def _snapshot_state(
 
 
 # ---------------------------------------------------------------------------
+# Reusable pipeline (shared by M3 sanity + M4 main)
+# ---------------------------------------------------------------------------
+
+
+_LEARNER_HISTORY_FILENAME = {
+    "B1": "baseline_source_only.json",
+    "B2": "baseline.json",
+    "P": "geohead.json",
+}
+
+
+def _run_pipeline_once(
+    config: SanityConfig,
+    *,
+    master_seed: int,
+    device: torch.device,
+    history_dir: Path | None = None,
+) -> tuple[list[EvalRecord], WarmupHistory, dict[str, Any], list[str]]:
+    """Execute one full (toy → warm-up → per-learner train → eval) pipeline.
+
+    This helper isolates everything that is re-run per *training seed* in
+    the M4 main experiment.  ``config.master_seed`` is **ignored** — pass
+    the desired seed via the ``master_seed`` argument so the caller can
+    iterate over many independent realisations with a single
+    :class:`SanityConfig`.
+
+    Parameters
+    ----------
+    config:
+        Hyperparameters (toy shifts, schedules, eval grid).
+    master_seed:
+        Drives every sub-generator: dataset realisation, encoder init,
+        warm-up shuffle, baseline / GeoHead training, and the evaluation
+        sub-sample sequence.  Different ``master_seed`` values produce
+        statistically independent runs.
+    device:
+        Target torch device.
+    history_dir:
+        If provided, per-learner training histories (``warmup.json``,
+        ``baseline.json``, ``geohead.json``, ``baseline_source_only.json``)
+        are written under this directory.  ``None`` skips disk I/O —
+        useful for tests or when the caller collects histories in memory.
+
+    Returns
+    -------
+    (records, warmup_history, per_learner_history, test_corpus_names)
+        ``records`` carries a ``"learner"`` field on every row; callers
+        are free to tag additional columns (e.g. ``train_seed``) before
+        merging with other pipeline runs.
+    """
+    if history_dir is not None:
+        history_dir.mkdir(parents=True, exist_ok=True)
+
+    # ---- Toy dataset (reseeded per master_seed) ----------------------------
+    toy_cfg = dataclasses.replace(config.toy, seed=int(master_seed))
+    ds = build_toy_dataset(
+        toy_cfg,
+        n_train_per_corpus=config.n_train_per_corpus,
+        n_test_support=config.n_test_support,
+        n_test_query=config.n_test_query,
+    )
+
+    # ---- Shared warm-up: θ, β_0 --------------------------------------------
+    encoder, head = _init_encoder_head(config, device, master_seed=master_seed)
+    warm_gen = _make_gen(master_seed + 2)
+    warmup_history = warmup_train(
+        encoder,
+        head,
+        ds.train,
+        config=config.warmup,
+        generator=warm_gen,
+        device=device,
+    )
+    if history_dir is not None:
+        _write_json(history_dir / "warmup.json", warmup_history)
+
+    warm_state = _snapshot_state(encoder, head)
+
+    eval_cfg = dataclasses.replace(
+        config.eval, seed_base=int(master_seed) + 1000
+    )
+
+    records: list[EvalRecord] = []
+    per_learner_history: dict[str, Any] = {}
+
+    for learner in config.learners:
+        enc_i, head_i = _init_encoder_head(
+            config, device, master_seed=master_seed
+        )
+        _load_state(enc_i, head_i, warm_state)
+
+        history: Any
+        if learner == "B1":
+            history = {"note": "warm-up only; no extra training"}
+        elif learner == "B2":
+            gen = _make_gen(master_seed + 3)
+            history = baseline_train(
+                enc_i,
+                head_i,
+                ds.train,
+                config=config.baseline,
+                generator=gen,
+                device=device,
+            )
+        elif learner == "P":
+            gen = _make_gen(master_seed + 4)
+            history = geohead_train(
+                enc_i,
+                head_i,
+                ds.train,
+                config=config.geohead,
+                generator=gen,
+                device=device,
+            )
+        else:  # pragma: no cover - guarded by SanityConfig.__post_init__
+            raise ValueError(f"unknown learner {learner!r}")
+
+        per_learner_history[learner] = history
+        if history_dir is not None:
+            _write_json(
+                history_dir / _LEARNER_HISTORY_FILENAME[learner], history
+            )
+
+        learner_records = evaluate_model(
+            enc_i, head_i, ds.test, config=eval_cfg, device=device
+        )
+        for r in learner_records:
+            r["learner"] = learner
+        records.extend(learner_records)
+
+    return records, warmup_history, per_learner_history, list(ds.test.keys())
+
+
+# ---------------------------------------------------------------------------
 # Main driver
 # ---------------------------------------------------------------------------
 
@@ -420,99 +566,21 @@ def run_sanity_check(
 
     device = torch.device(config.device)
 
-    # ---- Persist the config first so even a crashing run is traceable. -----
     _write_json(out_root / "config.json", config)
 
-    # ---- Toy dataset (deterministic from toy.seed, which we tie to
-    # master_seed via dataclasses.replace for reproducibility). -------------
-    toy_cfg = dataclasses.replace(config.toy, seed=int(config.master_seed))
-    ds = build_toy_dataset(
-        toy_cfg,
-        n_train_per_corpus=config.n_train_per_corpus,
-        n_test_support=config.n_test_support,
-        n_test_query=config.n_test_query,
-    )
-
-    # ---- Shared warm-up: θ, β_0 --------------------------------------------
-    encoder, head = _init_encoder_head(config, device)
-    warm_gen = _make_gen(config.master_seed + 2)
-    warmup_history = warmup_train(
-        encoder,
-        head,
-        ds.train,
-        config=config.warmup,
-        generator=warm_gen,
+    records, warmup_history, per_learner_history, test_names = _run_pipeline_once(
+        config,
+        master_seed=int(config.master_seed),
         device=device,
-    )
-    _write_json(out_root / "history" / "warmup.json", warmup_history)
-
-    warm_state = _snapshot_state(encoder, head)
-
-    # ---- Eval config: patch seed_base so evaluations are reproducible ------
-    eval_cfg = dataclasses.replace(
-        config.eval, seed_base=int(config.master_seed) + 1000
+        history_dir=out_root / "history",
     )
 
-    records: list[EvalRecord] = []
-    per_learner_history: dict[str, Any] = {}
-
-    for learner in config.learners:
-        # Fresh encoder/head, load the shared warm-up state.
-        enc_i, head_i = _init_encoder_head(config, device)
-        _load_state(enc_i, head_i, warm_state)
-
-        history: Any = None
-        if learner == "B1":
-            # Source-only: warm-up alone, no further training.
-            history = {"note": "warm-up only; no extra training"}
-        elif learner == "B2":
-            gen = _make_gen(config.master_seed + 3)
-            history = baseline_train(
-                enc_i,
-                head_i,
-                ds.train,
-                config=config.baseline,
-                generator=gen,
-                device=device,
-            )
-        elif learner == "P":
-            gen = _make_gen(config.master_seed + 4)
-            history = geohead_train(
-                enc_i,
-                head_i,
-                ds.train,
-                config=config.geohead,
-                generator=gen,
-                device=device,
-            )
-        else:  # pragma: no cover - guarded by SanityConfig.__post_init__
-            raise ValueError(f"unknown learner {learner!r}")
-
-        per_learner_history[learner] = history
-        history_path = out_root / "history" / {
-            "B1": "baseline_source_only.json",
-            "B2": "baseline.json",
-            "P": "geohead.json",
-        }[learner]
-        _write_json(history_path, history)
-
-        # Evaluate.
-        learner_records = evaluate_model(
-            enc_i, head_i, ds.test, config=eval_cfg, device=device
-        )
-        for r in learner_records:
-            r["learner"] = learner
-        records.extend(learner_records)
-
-    # ---- Persist records and aggregated summary ----------------------------
     _write_jsonl(out_root / "records.jsonl", records)
     aggregated = _aggregate_by_learner(records)
     _write_csv(out_root / "aggregated.csv", aggregated)
 
-    # ---- Plots -------------------------------------------------------------
-    _plot_all(records, out_root / "plots", ds_test_names=list(ds.test.keys()))
+    _plot_all(records, out_root / "plots", ds_test_names=test_names)
 
-    # ---- Human-readable summary -------------------------------------------
     _write_summary(
         out_root / "summary.md",
         config=config,
@@ -568,6 +636,10 @@ def _plot_all(
     records: Sequence[EvalRecord],
     out_dir: Path,
     ds_test_names: Sequence[str],
+    *,
+    mse_ylim: Mapping[str, tuple[float, float]] | None = None,
+    mse_yscale: str = "linear",
+    delta_xlim: Mapping[str, tuple[float, float]] | None = None,
 ) -> None:
     """Save two families of sample-efficiency plots + head-correction scatters.
 
@@ -576,6 +648,21 @@ def _plot_all(
     * ``sample_efficiency_{corpus}_by_{method}.png``: per-method figure,
       one curve per learner (lets you see who is the best *trainer*
       when adaptation is held fixed).
+
+    Parameters
+    ----------
+    mse_ylim:
+        Optional per-corpus ``(low, high)`` y-limits for the sample-
+        efficiency plots.  When provided, every plot on a given corpus
+        uses the same y-range so learners and methods are directly
+        comparable by eye.  Also applied to the head-correction
+        scatter's y-axis.
+    mse_yscale:
+        ``"linear"`` or ``"log"``.  Log-y compresses B2's instability
+        outliers while keeping P's fine structure visible.
+    delta_xlim:
+        Optional per-corpus ``(low, high)`` x-limits for the
+        head-correction scatter (measured in ``delta_geo``).
     """
     import matplotlib
     matplotlib.use("Agg")  # headless
@@ -585,6 +672,16 @@ def _plot_all(
 
     learners = sorted({r["learner"] for r in records})
     methods = sorted({r["method"] for r in records})
+
+    def _mse_ylim_for(corpus: str) -> tuple[float, float] | None:
+        if mse_ylim is None:
+            return None
+        return mse_ylim.get(corpus)
+
+    def _delta_xlim_for(corpus: str) -> tuple[float, float] | None:
+        if delta_xlim is None:
+            return None
+        return delta_xlim.get(corpus)
 
     # ---- Per-learner plots -------------------------------------------------
     for corpus in ds_test_names:
@@ -601,6 +698,8 @@ def _plot_all(
                 metric="mse",
                 out_path=out_dir / f"sample_efficiency_{corpus}_{learner}.png",
                 title=f"Sample efficiency on {corpus} — learner {learner}",
+                ylim=_mse_ylim_for(corpus),
+                yscale=mse_yscale,
             )
             plt.close(fig)
 
@@ -610,6 +709,9 @@ def _plot_all(
                 correction_metric="delta_geo",
                 out_path=out_dir / f"head_correction_{corpus}_{learner}.png",
                 title=f"Head correction vs MSE on {corpus} — learner {learner}",
+                xlim=_delta_xlim_for(corpus),
+                ylim=_mse_ylim_for(corpus),
+                yscale=mse_yscale,
             )
             plt.close(fig)
 
@@ -633,6 +735,8 @@ def _plot_all(
                 metric="mse",
                 out_path=out_dir / f"sample_efficiency_{corpus}_by_{method}.png",
                 title=f"Sample efficiency on {corpus} — adapt='{method}'",
+                ylim=_mse_ylim_for(corpus),
+                yscale=mse_yscale,
             )
             plt.close(fig)
 

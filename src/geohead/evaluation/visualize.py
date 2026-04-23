@@ -54,6 +54,11 @@ def plot_sample_efficiency_curve(
     metric: str = "mse",
     out_path: str | Path | None = None,
     title: str | None = None,
+    *,
+    xlim: tuple[float, float] | None = None,
+    ylim: tuple[float, float] | None = None,
+    xscale: str = "log",
+    yscale: str = "linear",
 ):
     """Plot ``k_shot`` vs mean ± 95 % CI for ``metric`` on ``corpus``.
 
@@ -75,6 +80,15 @@ def plot_sample_efficiency_curve(
     title:
         Optional axes title override.  Defaults to
         ``f"Sample efficiency on {corpus} ({metric})"``.
+    xlim, ylim:
+        Optional axis-range overrides ``(low, high)``.  When ``None``
+        matplotlib autoscales.  Use these to unify ranges across a
+        family of comparable plots.
+    xscale, yscale:
+        Matplotlib axis scales (``"linear"`` / ``"log"`` / ``"symlog"``).
+        Default: log x-axis (support sizes span 1–24), linear y.  Pass
+        ``yscale="log"`` for a log-log view that compresses outliers
+        and emphasises multiplicative differences between methods.
 
     Returns
     -------
@@ -105,7 +119,12 @@ def plot_sample_efficiency_curve(
         ax.plot(ks, means, marker="o", color=colour, label=method)
         ax.fill_between(ks, lo, hi, color=colour, alpha=0.2)
 
-    ax.set_xscale("log")
+    ax.set_xscale(xscale)
+    ax.set_yscale(yscale)
+    if xlim is not None:
+        ax.set_xlim(*xlim)
+    if ylim is not None:
+        ax.set_ylim(*ylim)
     ax.set_xlabel("support size k")
     ax.set_ylabel(f"query {metric}")
     ax.set_title(title or f"Sample efficiency on {corpus} ({metric})")
@@ -127,6 +146,11 @@ def plot_head_correction_vs_mse(
     correction_metric: str = "delta_geo",
     out_path: str | Path | None = None,
     title: str | None = None,
+    *,
+    xlim: tuple[float, float] | None = None,
+    ylim: tuple[float, float] | None = None,
+    xscale: str = "linear",
+    yscale: str = "linear",
 ):
     """Scatter ``(head correction magnitude, query MSE)`` for one corpus.
 
@@ -145,6 +169,12 @@ def plot_head_correction_vs_mse(
         matches the §4.3 inner-loss geometry.
     out_path, title:
         See :func:`plot_sample_efficiency_curve`.
+    xlim, ylim:
+        Optional axis ranges for cross-plot comparison.
+    xscale, yscale:
+        Matplotlib scales.  Use ``xscale="symlog"`` when
+        ``correction_metric="delta_l2"`` — the ``none`` method sits at
+        ``x = 0`` and must remain plottable on a log-ish axis.
 
     Returns
     -------
@@ -171,6 +201,12 @@ def plot_head_correction_vs_mse(
         ys = [r["mse"] for r in rows if r["method"] == method]
         ax.scatter(xs, ys, color=palette[method], alpha=0.6, s=20, label=method)
 
+    ax.set_xscale(xscale)
+    ax.set_yscale(yscale)
+    if xlim is not None:
+        ax.set_xlim(*xlim)
+    if ylim is not None:
+        ax.set_ylim(*ylim)
     ax.set_xlabel(
         "||β̂ - β₀||₂" if correction_metric == "delta_l2"
         else "(β̂ - β₀)ᵀ (Σ̂ + εI) (β̂ - β₀)"
