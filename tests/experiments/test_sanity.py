@@ -82,9 +82,10 @@ def test_sanity_config_defaults_match_proposal() -> None:
     assert c.warmup.epochs == 30
     assert c.baseline.outer_steps == 1500
     assert c.geohead.outer_steps == 1500
-    assert c.eval.k_shots == (1, 4, 8, 16, 32)
+    assert c.eval.k_shots == (1, 4, 8, 16, 24)
     assert c.eval.n_seeds == 5
     assert c.encoder_hidden == (128, 128)
+    assert c.encoder_p == 32
 
 
 def test_sanity_config_rejects_unknown_learner() -> None:

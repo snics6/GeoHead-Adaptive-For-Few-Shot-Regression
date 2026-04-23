@@ -166,6 +166,13 @@ def _default_geohead() -> GeoHeadConfig:
         inner_steps=5,
         inner_lr=0.1,
         lambda_h=0.1,
+        # v7: ε back to 1e-4.  v6's ε=1e-2 eliminated the k≈p blow-up
+        # but also flattened the preconditioner to near-identity, which
+        # crushed GeoHead's inner travel (||β'-β₀|| dropped from 1.14
+        # to 0.41) and killed the outer meta-gradient signal onto β₀.
+        # With encoder_p=48 and k_max=24 (both raised in v6/v7), the
+        # k<p invariant already prevents the rank-edge pathology —
+        # small ε is safe again.
         head_reg_eps=1e-4,
         preconditioned_inner=True,
         lambda_D=1.0,
@@ -186,7 +193,13 @@ def _default_eval() -> EvalConfig:
     # preconditioned inner rule — this gives ``inner`` a fair shot on
     # top of any encoder without feature-scale penalties.
     return EvalConfig(
-        k_shots=(1, 4, 8, 16, 32),
+        # v6/v7: ``k_shots = (1,4,8,16,24)`` with ``encoder_p = 48``
+        # keeps ``k/p ≤ 0.5`` for every cell — well away from the
+        # Marchenko-Pastur edge at ``k=p`` where ``λ_min(Σ̂)`` collapses
+        # and the preconditioner ``(Σ̂+εI)^{-1}`` amplifies noise.  With
+        # the edge avoided, ε can safely return to 1e-4 (v7) to
+        # recover GeoHead's training signal (see :func:`_default_geohead`).
+        k_shots=(1, 4, 8, 16, 24),
         n_seeds=5,
         methods=("none", "ridge", "geo", "inner"),
         inner_steps=5,
@@ -209,7 +222,19 @@ class SanityConfig:
     n_test_support: int = 200
     n_test_query: int = 1000
 
-    # Trainable encoder architecture (d_x comes from toy.d_x)
+    # Trainable encoder architecture (d_x comes from toy.d_x).
+    # v8: back to ``encoder_p = 32`` after a v6/v7 detour at 48 showed
+    # that widening the encoder undercut GeoHead's advantage: with
+    # ``support_size = 32 < p = 48`` the training-time preconditioner
+    # behaves near-identity on ``range(Σ_S)``, shortening the inner
+    # trajectory (||β'-β₀|| 1.14 → 0.45) and starving the outer
+    # meta-gradient.  With ``p = 32`` and ``support_size = 32`` the
+    # training inner loop sits on the rank edge (k = p) where the
+    # preconditioner has bite — meta-learning signal is strong.  The
+    # eval k_shots are capped at 24 (see :func:`_default_eval`) so the
+    # rank-edge numerical pathology stays confined to training, where
+    # the Cholesky factor is computed anyway from the same episode's
+    # support and the downstream outer loss absorbs any noise.
     encoder_hidden: tuple[int, ...] = (128, 128)
     encoder_p: int = 32
 

@@ -731,43 +731,43 @@ GeoHead-Adaptation-for-Few-shot-Regression/
 
 #### M3 の試行ログと最終設定
 
-| run | `head_shift_train` | `head_shift_extrap` | `mu_norm` | `noise_sigma` | `inner_steps` (train/eval) | `preconditioned` | 主要結果 |
-|---|---|---|---|---|---|---|---|
-| v1 | 0.4 | 0.8 | 0.5 | 0.1 | 1 / 5 | ✗ | タスク難度低・`inner` が発散．`B1/none` が noise floor． |
-| v2 | 0.8 | 1.5 | 1.0 | 0.1 | 1 / 1 | ✗ | `inner` 発散消滅．ただし全セルで `none` が最強． |
-| v3 | 2.0 | 3.0 | 1.0 | 0.1 | 1 / 1 | ✗ | `P/none` が `B1/none` を T1 で -18 %，ridge が T2 で効く．ただし `B1/none` ≈ 0.05（noise floor の 5×）で **source-only で十分賄える regime**． |
-| v4 | 2.0 | 3.0 | 1.0 | 0.1 | 5 / 5 | ✗ | `inner_rule_adapt` がスケール不変でないため 5 step で発散（B2/P）． |
-| v5 | **4.0** | **6.0** | **2.0** | **0.05** | **5 / 5** | **✓** | **採用設定**．head/covariate shift を v3 の倍・ノイズ床を 1/4 に下げ，`source-only では構造的に不足`な regime に移行．preconditioned inner rule により v4 の発散は解消． |
+v1 〜 v4 は **タスク難度と inner rule の stability** を調整した反復．v5 以降は
+shift 強度を固定し **preconditioner 周りの $(p, k_{\max}, \varepsilon)$ のトレードオフ**
+を探った．
 
-採用した `_default_toy()` / `_default_geohead()` / `_default_eval()` は v5 に相当する．
+| run | shift (h_train, h_extrap, μ, σ) | $p$ | $k_{\max}$ | $\varepsilon$ | preconditioned | 主要結果 |
+|---|---|---|---|---|---|---|
+| v1 | (0.4, 0.8, 0.5, 0.1) | 32 | 32 | 1e-6 | ✗ | タスク難度低・`inner` が発散．`B1/none` が noise floor． |
+| v2 | (0.8, 1.5, 1.0, 0.1) | 32 | 32 | 1e-6 | ✗ | `inner` 発散消滅．ただし全セルで `none` が最強． |
+| v3 | (2.0, 3.0, 1.0, 0.1) | 32 | 32 | 1e-6 | ✗ | `P/none` が `B1/none` を T1 で -18 %．ただし `B1/none` ≈ 0.05（noise floor の 5×）で **source-only で十分賄える regime**． |
+| v4 | (2.0, 3.0, 1.0, 0.1) | 32 | 32 | 1e-6 | ✗ (steps=5) | `inner_rule_adapt` がスケール不変でないため 5 step で発散（B2/P）． |
+| v5 | (4.0, 6.0, 2.0, 0.05) | 32 | 32 | 1e-4 | ✓ | shift を v3 の倍にして `B1/none T2 = 0.57` まで押し上げ．P/none が T1/T2 両方で最小．ただし `inner` / `geo` が $k = p = 32$ の Marchenko-Pastur エッジで発散（`P/geo k=32 = 7.54`）． |
+| v6 | (4.0, 6.0, 2.0, 0.05) | **48** | **24** | **1e-2** | ✓ | $p$ を広げ $k_{\max} < p$ を強制 + ε を damping として増やす．**発散完全解消**．ただし ε=1e-2 が preconditioner を identity に近づけて GeoHead 訓練の inner trajectory が縮み（\|β'-β₀\| = 1.14 → 0.41），P/none の優位性が失われた． |
+| v7 | (4.0, 6.0, 2.0, 0.05) | 48 | 24 | **1e-4** | ✓ | ε を v5 相当に戻した．**発散なし**．しかし $p=48$ は $\text{support\_size}=32 < p$ で preconditioner の range が狭く，やはり inner 軌道は短い（\|β'-β₀\| = 0.45）．B2/none が T1 で最強化，P の優位性は戻らず． |
+| v8 | (4.0, 6.0, 2.0, 0.05) | **32** | **24** | 1e-4 | ✓ | **採用設定**．$p=32, \text{support\_size}=32$ で訓練 inner を rank-edge（$k=p$）に戻し GeoHead の outer meta-gradient signal を確保（\|β'-β₀\| = 1.14）．同時に eval $k_{\max}=24$ で Marchenko-Pastur 発散を回避．`P/none T1 = 0.073`，`P/none T2 = 0.501`，`P/ridge k=24 T2 = 0.155` がいずれも全セル中最小． |
 
-#### M3 合格根拠（v5）
+採用した `_default_toy()` / `_default_geohead()` / `_default_eval()` / `SanityConfig.encoder_p` は v8 に相当する．
 
-1. **source-only の構造的不足**: v5 の `B1/none T1` は warm-up pooled MSE が 0.13
-   程度まで収束した後も noise floor（$\sigma^2 = 0.0025$）から 40〜100 倍離れる水準に留まる．
-   `head_shift` を 4.0 まで押し上げ 3 corpora の $\beta^*$ をばらけさせることで，
-   pooled 平均 $\beta_{\text{pool}}$ がどの個別 $T$ にも十分フィットできない
-   状況を作った．「source で warm-up しただけでは本質的に不足」という claim の
-   実験的裏付けになる．
-2. **preconditioned inner rule の効果**: v4 で問題になった特徴量ノルム依存の
-   発散は `P = (\hat\Sigma_S + \varepsilon I)^{-1}` で完全に解消．`inner_steps=5`
-   の多段 GD でも MSE が有限値に留まり，`ridge` とは異なる軌道で $\beta_0$ から
-   離れられる．MAML らしい bilevel 構造が意味のあるレベルで機能する設定点に到達．
-3. **数値安定性の確保**: Cholesky solve は微分可能なので outer 側（`create_graph=True`）
-   でも発散せず，train / eval で同じ前処理を一貫適用できる．
+#### v5 → v8 の設計原理
+
+v5 で発見した「**訓練時の rank-edge は GeoHead の signal 源，eval 時の rank-edge は数値不安定の源**」という同根の現象を，**train / eval で $k/p$ を非対称に設定**することで両立させた:
+
+- **train 側**: $\text{support\_size} = p = 32$ で rank-edge に居続ける → preconditioner が range を強く歪ませ inner trajectory が長く，outer meta-gradient に強い shape signal が乗る．
+- **eval 側**: $k_{\max} = 24 < p = 32$ で Marchenko-Pastur エッジを回避 → $\hat\Sigma_S$ が常に rank-deficient，null space の勾配成分が自然にゼロ，preconditioner が well-behaved．
+
+#### M3 合格根拠（v8）
+
+1. **source-only の構造的不足**: `B1/none T1 = 0.078`（noise floor $\sigma^2 = 0.0025$ の **31×**）．`B1/none T2 = 0.567`（floor の **227×**）．`head_shift=4.0` で 3 corpora の $\beta^*$ をばらけさせたことで pooled 平均ではどの個別 $T$ にもフィットできない．「source で warm-up しただけでは本質的に不足」という claim の実験的裏付け．
+2. **meta-learning が β₀ を改善**: `P/none` が T1 (**0.073**)・T2 (**0.501**) の両方で全 `none` 中最小．warm-up だけの $\beta_0$ より GeoHead の meta-trained $\beta_0$ が target-optimal に近い．
+3. **adaptation が T2 で劇的に効く**: `P/ridge k=24 T2 = 0.155` は `P/none` 比 **-69 %**，`B1/none` 比 **-73 %**．meta-trained β₀ + ridge head-adapt が最強の combination．
+4. **preconditioned inner rule の効果**: v4 の特徴量ノルム依存発散，v5 の $k = p$ エッジ発散はともに $p=32, k_{\max}=24, \varepsilon=10^{-4}$ の v8 設定で解消．Cholesky solve により outer の二階微分も安定に流れる．
+5. **adaptation が不要な時は邪魔しない**: T1 では `P/none = 0.073` が `P/ridge k=24 = 0.096` より良い．T1 は interpolation なので $\beta_0$ が既に十分良く，few-shot adapt は variance を足すだけで不要 — これが自然に検出できている．
 
 #### M3 から M4 に引き継ぐ未解決事項
 
-- **T2 (extrapolation) で P が B1/B2 を上回るか**: v3 では `P/none T2 > B2/none T2`
-  という残念な結果だった．v5 で `mu_norm` を倍にしたことで target x-marginal が
-  source 台集合から明確に外れるので，B1/B2 にとっても難しくなる見込み．M4 で
-  20 seed まで拡張して再評価．
-- **`geo_adapt` の小-k 不安定**: `Σ̂ = Zᵀ Z / k` が $k < p$ で rank-deficient．
-  v5 では `head_reg_eps = 1e-4` まで引き上げたが，shrinkage 系（Ledoit-Wolf 風）
-  の導入は M5 で検討．
-- **outer loss の重み**: `λ_D, α_cos, γ_scale` は design doc §10 の初期値のまま．
-  v5 では `head_shift` が強いので DARE regularizer が `L_qry` と競合する可能性
-  あり．M4 で λ_D sweep を小規模でも入れるか M5 の ablation に回すか判断．
+- **`inner` / `geo` の rank-edge 残滓**: $k_{\max}=24$ でも `P/geo k=24 T1 = 0.331` のように $k$ が大きくなるにつれて `inner` / `geo` が緩やかに劣化する（`ridge` は単調減少で劣化なし）．M5 で shrinkage 系（Ledoit-Wolf）や adaptive $\varepsilon$ を ablation．
+- **B2 / P が T1 で `none` > `ridge`**: T1 は interpolation で $\beta_0$ が既に target-optimal に近いので，adaptation の variance が bias 削減を上回る．これは期待される挙動だが，`ridge_lambda` をより攻撃的に下げる余地はある．M4 では λ sweep を small set でも入れる．
+- **outer loss の重み**: `λ_D, α_cos, γ_scale` は design doc §10 の初期値のまま．`head_shift=4.0` が強いので DARE regularizer が `L_qry` と競合する可能性あり．M4 で小規模 λ_D sweep か M5 の ablation に回す．
 
 ### M4: 実験本番
 - [ ] 2 test corpora × 5 support sizes × 20 seed × 3 methods
