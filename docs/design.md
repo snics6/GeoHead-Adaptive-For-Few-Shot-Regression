@@ -721,6 +721,40 @@ GeoHead-Adaptation-for-Few-shot-Regression/
     ので同じ config は bit-identical な artefact を再生する
   - `--smoke` フラグで ≈5 s の縮小実行．フル実行は ~15 min（CPU, 1500 outer_steps）
 
+#### M3 の試行ログと最終設定
+
+| run | `head_shift_train` | `head_shift_extrap` | `inner_steps` (train/eval) | 主要結果 |
+|---|---|---|---|---|
+| v1 | 0.4 | 0.8 | 1 / 5 | タスク難度低・`inner` が発散．`B1/none` が noise floor． |
+| v2 | 0.8 | 1.5 | 1 / 1 | `inner` 発散消滅．ただし全セルで `none` が最強． |
+| v3 | **2.0** | **3.0** | **1 / 1** | **採用設定**．`P/none` が `B1/none` を T1 で -18 %，ridge が T2 で効く． |
+| v4 | 2.0 | 3.0 | 5 / 5 | `inner_rule_adapt` がスケール不変でないため 5 step で発散（B2/P）． |
+
+採用した `_default_toy()` / `_default_geohead()` / `_default_eval()` は v3 に相当する．
+
+#### M3 合格根拠（v3）
+
+1. **表現学習が効いた証拠**: T1 で `P/none = 0.0382` が `B1/none = 0.0469` を明確に下回る
+   （-18 %）．GeoHead の meta-trained β₀ は warm-up β₀ より target-optimal に近い．
+2. **adaptation が機能する証拠**: T2 で `{B1, B2, P}/ridge` がいずれも `none` より低い MSE に到達
+   （例: `B1/ridge k=32 = 0.082` vs `B1/none = 0.158`，-48 %）．タスク難度は適切．
+3. **数値安定性の確保**: train/eval の `inner_steps` を 1 に揃えることで v1 で見られた
+   `1e+6 - 1e+8` 桁の発散は消滅．
+
+#### M3 から M4 に引き継ぐ未解決事項
+
+- **inner rule の脆弱性**: `inner_rule_adapt` は vanilla GD で feature scale 不変でない．
+  DARE 訓練で encoder の出力ノルムが伸びた B2/P では多段 inner が発散する．
+  ridge（前処理付き 1 step に相当）は安定．M4 以降で inner rule を preconditioned
+  に書き換えるか，inner を GeoHead の評価対象から外して「β₀ + ridge」を主たる
+  adaptation rule と位置づけるか整理する．
+- **T2 (extrapolation) で P < B2**: `P/none T2 = 0.212` vs `B2/none T2 = 0.130`．
+  GeoHead の `L_query` が episode 内で source 方向に β₀ を引き寄せ，source-unseen
+  な δ₄ 方向に弱くなる可能性がある．M5 の ablation（`w/o L_query`）で検証．
+- **`geo_adapt` の小-k 不安定**: `Σ̂ = ZᵀZ/k` が `k<p` で rank-deficient．
+  `eps=1e-6` の Tikhonov では不十分．`eps` の自動スケーリングか，shrinkage
+  (Ledoit-Wolf 風)を M4 実装前に検討．
+
 ### M4: 実験本番
 - [ ] 2 test corpora × 5 support sizes × 20 seed × 3 methods
 - [ ] sample efficiency curve

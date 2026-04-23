@@ -91,6 +91,38 @@ __all__ = [
 LEARNERS: tuple[str, str, str] = ("B1", "B2", "P")
 
 
+def _default_toy() -> ToyConfig:
+    """Harder toy shifts than ``ToyConfig()`` — used by the M3 sanity
+    check so that ``β_0`` alone cannot already solve ``T_1 / T_2``.
+
+    History
+    -------
+    * v1 (``ToyConfig()`` defaults, ``head_shift_train=0.4``):
+      ``B1/none`` hit the noise floor on both test corpora; zero
+      headroom for adaptation.
+    * v2 (``head_shift_train=0.8``, ``head_shift_extrap=1.5``):
+      numerical instability was fixed but ``none`` still beat every
+      adaptation method — the warm-up encoder already absorbed most of
+      the head shift, leaving ``B1/none`` only ``0.02`` above the
+      noise floor (p=32 ridge variance at k=32 is ~``0.01``, so
+      adaptation had no room to win).
+    * v3 (current): push ``head_shift_train`` up by another 2.5× so
+      the D2/D3 head shift is large enough to force ``φ_θ`` to keep
+      the δ₁, δ₂ directions; then ``T₁``'s residual bias becomes big
+      enough to beat the ridge variance floor.  ``μ_norm`` /
+      ``cov_log_std`` stay at v2 values — head shift is the binding
+      constraint, covariate shift was already non-trivial.
+    """
+    return ToyConfig(
+        mu_norm=1.0,
+        cov_log_std=0.5,
+        head_shift_train=2.0,
+        mu_norm_extrap=2.0,
+        cov_log_std_extrap=1.0,
+        head_shift_extrap=3.0,
+    )
+
+
 def _default_warmup() -> WarmupConfig:
     return WarmupConfig(epochs=30, batch_size=256, lr=1e-3)
 
@@ -108,6 +140,18 @@ def _default_baseline() -> BaselineConfig:
 
 
 def _default_geohead() -> GeoHeadConfig:
+    # ``inner_steps=1`` (v3, kept).  v4 tried ``inner_steps=5`` to let
+    # β' travel farther from β_0, but that ran into a scale-invariance
+    # bug in :func:`inner_rule_adapt`: the update
+    # ``β ← β - η · (2/k)·Zᵀ(Zβ-y) + …`` is not scale-invariant in
+    # ``Z``, so five ``η=0.1`` steps diverged catastrophically on
+    # learners whose DARE-trained encoders have large feature norms
+    # (B2, P: ``||Z||₂`` grew with the cos/scale losses).  With one
+    # step GeoHead's meta-trained β₀ is the adaptive quantity (the
+    # MAML philosophy — small inner travel, strong outer initialisation),
+    # and downstream sanity numbers show this is the GeoHead design
+    # point we want to test: ``P/none`` is expected to beat every
+    # baseline on ``T₁``, because β₀ itself carries the adaptation.
     return GeoHeadConfig(
         outer_steps=1500,
         outer_lr=1e-3,
@@ -126,10 +170,17 @@ def _default_geohead() -> GeoHeadConfig:
 
 
 def _default_eval() -> EvalConfig:
+    # Must match :func:`_default_geohead.inner_steps`.  v1 had the
+    # global :class:`EvalConfig` default of 5 against a train-time 1 and
+    # diverged at small ``k``.  v4 lifted training to 5 to keep parity
+    # but hit the inner-rule scale-invariance bug noted above.  We lock
+    # both sides to 1: GeoHead's contribution lives in β₀, not in the
+    # inner trajectory.
     return EvalConfig(
         k_shots=(1, 4, 8, 16, 32),
         n_seeds=5,
         methods=("none", "ridge", "geo", "inner"),
+        inner_steps=1,
     )
 
 
@@ -142,7 +193,7 @@ class SanityConfig:
     """
 
     # Toy data
-    toy: ToyConfig = field(default_factory=ToyConfig)
+    toy: ToyConfig = field(default_factory=_default_toy)
     n_train_per_corpus: int = 2000
     n_test_support: int = 200
     n_test_query: int = 1000
@@ -581,6 +632,16 @@ def _write_summary(
         f"- warm-up epochs = **{config.warmup.epochs}**，"
         f"baseline outer_steps = **{config.baseline.outer_steps}**，"
         f"geohead outer_steps = **{config.geohead.outer_steps}**"
+    )
+    lines.append(
+        f"- toy shifts: `head_shift_train`=**{config.toy.head_shift_train}**，"
+        f"`head_shift_extrap`=**{config.toy.head_shift_extrap}**，"
+        f"`mu_norm`=**{config.toy.mu_norm}**，"
+        f"`mu_norm_extrap`=**{config.toy.mu_norm_extrap}**"
+    )
+    lines.append(
+        f"- test-time `inner_steps` = **{config.eval.inner_steps}** "
+        f"(training-time = {config.geohead.inner_steps})"
     )
 
     # Warm-up last loss
