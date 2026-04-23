@@ -106,20 +106,32 @@ def _default_toy() -> ToyConfig:
       the head shift, leaving ``B1/none`` only ``0.02`` above the
       noise floor (p=32 ridge variance at k=32 is ~``0.01``, so
       adaptation had no room to win).
-    * v3 (current): push ``head_shift_train`` up by another 2.5× so
-      the D2/D3 head shift is large enough to force ``φ_θ`` to keep
-      the δ₁, δ₂ directions; then ``T₁``'s residual bias becomes big
-      enough to beat the ridge variance floor.  ``μ_norm`` /
-      ``cov_log_std`` stay at v2 values — head shift is the binding
-      constraint, covariate shift was already non-trivial.
+    * v3 (``head_shift_train=2.0, _extrap=3.0``): ``P/none`` finally beat
+      ``B1/none`` on ``T₁`` (-18%) and ``ridge`` closed ~half of the
+      T₂ gap, but ``B1/none`` was still only ``~0.05`` on T₁ — the
+      "source-only is fundamentally fine" regime.  Conceptually the
+      sanity check still passed because we saw *trend*, but the user
+      wanted a setup where source-only is *structurally* wrong.
+    * v5 (current): double ``head_shift`` again and also lift
+      ``mu_norm`` from 1 to 2 (target x-marginal now firmly outside
+      the source support) while halving ``noise_sigma`` to push the
+      Bayes floor from ``0.01`` down to ``0.0025``.  Net effect:
+      ``B1/none`` on T₁ should land ≈ ``0.2–0.5`` (~100× above the
+      floor), adaptation has meaningful headroom, and the story
+      "source-only is structurally insufficient; the encoder must
+      keep δ₁,δ₂ alive *and* the head must be corrected from β_0"
+      becomes testable.  v5 is co-designed with the preconditioned
+      inner rule: bigger shifts mean bigger ``||Z||``, and vanilla
+      GD would have diverged again (the v4 failure mode).
     """
     return ToyConfig(
-        mu_norm=1.0,
+        noise_sigma=0.05,
+        mu_norm=2.0,
         cov_log_std=0.5,
-        head_shift_train=2.0,
-        mu_norm_extrap=2.0,
+        head_shift_train=4.0,
+        mu_norm_extrap=4.0,
         cov_log_std_extrap=1.0,
-        head_shift_extrap=3.0,
+        head_shift_extrap=6.0,
     )
 
 
@@ -140,24 +152,22 @@ def _default_baseline() -> BaselineConfig:
 
 
 def _default_geohead() -> GeoHeadConfig:
-    # ``inner_steps=1`` (v3, kept).  v4 tried ``inner_steps=5`` to let
-    # β' travel farther from β_0, but that ran into a scale-invariance
-    # bug in :func:`inner_rule_adapt`: the update
-    # ``β ← β - η · (2/k)·Zᵀ(Zβ-y) + …`` is not scale-invariant in
-    # ``Z``, so five ``η=0.1`` steps diverged catastrophically on
-    # learners whose DARE-trained encoders have large feature norms
-    # (B2, P: ``||Z||₂`` grew with the cos/scale losses).  With one
-    # step GeoHead's meta-trained β₀ is the adaptive quantity (the
-    # MAML philosophy — small inner travel, strong outer initialisation),
-    # and downstream sanity numbers show this is the GeoHead design
-    # point we want to test: ``P/none`` is expected to beat every
-    # baseline on ``T₁``, because β₀ itself carries the adaptation.
+    # v5: enable the preconditioned inner rule (``P = (Σ_S + ε I)^{-1}``)
+    # so the inner step is feature-scale invariant.  This lets us raise
+    # ``inner_steps`` back up without the v4 divergence: with the
+    # preconditioner, ``η=0.5`` on a single step lands exactly on β_OLS
+    # (λ_h=0, ε→0 limit), so 5 steps at ``η=0.1`` traces a smooth,
+    # bounded path from β_0 towards the ridge solution — in line with
+    # the MAML philosophy *and* giving the inner trajectory enough
+    # length to meaningfully differ from the ``ridge`` baseline.
     return GeoHeadConfig(
         outer_steps=1500,
         outer_lr=1e-3,
-        inner_steps=1,
+        inner_steps=5,
         inner_lr=0.1,
         lambda_h=0.1,
+        head_reg_eps=1e-4,
+        preconditioned_inner=True,
         lambda_D=1.0,
         alpha_cos=0.01,
         gamma_scale=1e-4,
@@ -170,17 +180,18 @@ def _default_geohead() -> GeoHeadConfig:
 
 
 def _default_eval() -> EvalConfig:
-    # Must match :func:`_default_geohead.inner_steps`.  v1 had the
-    # global :class:`EvalConfig` default of 5 against a train-time 1 and
-    # diverged at small ``k``.  v4 lifted training to 5 to keep parity
-    # but hit the inner-rule scale-invariance bug noted above.  We lock
-    # both sides to 1: GeoHead's contribution lives in β₀, not in the
-    # inner trajectory.
+    # Must match :func:`_default_geohead` for the ``inner`` method to be
+    # fair to P: same ``inner_steps=5``, same preconditioner.  The
+    # non-GeoHead learners (B1, B2) are also evaluated with the
+    # preconditioned inner rule — this gives ``inner`` a fair shot on
+    # top of any encoder without feature-scale penalties.
     return EvalConfig(
         k_shots=(1, 4, 8, 16, 32),
         n_seeds=5,
         methods=("none", "ridge", "geo", "inner"),
-        inner_steps=1,
+        inner_steps=5,
+        head_reg_eps=1e-4,
+        inner_preconditioned=True,
     )
 
 

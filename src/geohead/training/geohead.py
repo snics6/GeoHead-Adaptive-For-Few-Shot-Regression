@@ -88,6 +88,12 @@ class GeoHeadConfig:
     inner_lr: float = 0.1
     lambda_h: float = 0.1
     head_reg_eps: float = 1e-6
+    # When ``True`` the inner rule uses the damped natural-gradient
+    # preconditioner ``(Σ_S + ε I)^{-1}``; see
+    # :func:`geohead.adaptation.test_time.inner_rule_adapt` for
+    # rationale (feature-scale invariance).  Default ``False`` keeps
+    # the vanilla GD rule for backward compatibility.
+    preconditioned_inner: bool = False
 
     # DARE-GRAM weights and SVD truncation
     lambda_D: float = 1.0
@@ -280,6 +286,7 @@ def geohead_train(
             steps=config.inner_steps,
             eps=config.head_reg_eps,
             create_graph=True,
+            preconditioned=config.preconditioned_inner,
         )
 
         # --- Outer losses (§4.4) ---

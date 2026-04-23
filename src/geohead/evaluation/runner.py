@@ -100,6 +100,11 @@ class EvalConfig:
     inner_lr: float = 0.1
     inner_steps: int = 5
     head_reg_eps: float = 1e-6
+    # When ``True`` the ``inner`` method uses the damped natural-gradient
+    # preconditioner ``(Σ_hat + ε I)^{-1}`` — should match
+    # :attr:`GeoHeadConfig.preconditioned_inner` when evaluating a
+    # GeoHead model for train/test parity (§8.3).
+    inner_preconditioned: bool = False
 
     # Reproducibility.  A ``support`` sub-sample at (corpus=c, k_shot=k,
     # seed=s) is drawn from Generator(seed_base + seed) — this is the
@@ -169,6 +174,7 @@ def _adapt(
             steps=config.inner_steps,
             eps=config.head_reg_eps,
             create_graph=False,
+            preconditioned=config.inner_preconditioned,
         )
     raise ValueError(f"unknown method {method!r}")  # unreachable given _VALID_METHODS
 

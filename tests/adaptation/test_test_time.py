@@ -290,6 +290,129 @@ def test_inner_rule_adapt_validation() -> None:
 
 
 # ---------------------------------------------------------------------------
+# preconditioned inner rule
+# ---------------------------------------------------------------------------
+
+
+def test_inner_rule_preconditioned_default_is_vanilla() -> None:
+    """Omitting ``preconditioned`` must reproduce the original update."""
+    torch.manual_seed(0)
+    z, y, beta_0, _ = _toy_problem(n=40, p=6, seed=10)
+    sigma = second_moment(z)
+
+    vanilla = inner_rule_adapt(
+        z, y, beta_0, sigma, lambda_h=0.1, eta=0.01, steps=3
+    )
+    explicit_off = inner_rule_adapt(
+        z, y, beta_0, sigma, lambda_h=0.1, eta=0.01, steps=3,
+        preconditioned=False,
+    )
+    assert torch.allclose(vanilla, explicit_off)
+
+
+def test_inner_rule_preconditioned_step_one_reaches_ols() -> None:
+    """One preconditioned step with ``η=1/2``, ``λ_h=0`` and ``ε→0``
+    must land on the OLS solution (derivation in the function docstring).
+    """
+    torch.manual_seed(0)
+    z, y, beta_0, _ = _toy_problem(n=60, p=5, seed=11)
+    sigma = second_moment(z)
+
+    # β_OLS = (ZᵀZ)⁻¹ Zᵀy — full-rank since n >> p.
+    beta_ols = torch.linalg.solve(z.T @ z, z.T @ y)
+
+    beta_prec = inner_rule_adapt(
+        z, y, beta_0, sigma,
+        lambda_h=0.0, eta=0.5, steps=1,
+        eps=1e-10, preconditioned=True,
+    )
+    assert torch.allclose(beta_prec, beta_ols, atol=1e-5, rtol=1e-4)
+
+
+def test_inner_rule_preconditioned_stable_under_feature_scale() -> None:
+    """Vanilla GD diverges when ``||z||`` grows; the preconditioned
+    variant stays bounded (scale invariance property)."""
+    torch.manual_seed(0)
+    z, y, beta_0, _ = _toy_problem(n=40, p=4, seed=12)
+    scale = 100.0
+    z_big = z * scale
+    sigma_big = second_moment(z_big)
+
+    vanilla_big = inner_rule_adapt(
+        z_big, y, beta_0, sigma_big,
+        lambda_h=0.1, eta=0.1, steps=5,
+    )
+    prec_big = inner_rule_adapt(
+        z_big, y, beta_0, sigma_big,
+        lambda_h=0.1, eta=0.1, steps=5,
+        preconditioned=True,
+    )
+
+    # Vanilla GD explodes — residual blows up.
+    vanilla_res = (z_big @ vanilla_big - y).abs().max().item()
+    prec_res = (z_big @ prec_big - y).abs().max().item()
+    assert vanilla_res > 1e3, (
+        "vanilla GD should diverge at this feature scale — "
+        f"got max residual {vanilla_res}"
+    )
+    # Preconditioned must be comparable to β_0's fit (no blow-up).
+    base_res = (z_big @ beta_0 - y).abs().max().item()
+    assert prec_res < base_res * 2 + 1.0, (
+        "preconditioned inner rule should stay bounded; "
+        f"got max residual {prec_res} vs base {base_res}"
+    )
+
+
+def test_inner_rule_preconditioned_scale_invariance() -> None:
+    """Predictions ``Zβ̂`` must be invariant under ``Z → cZ, β_0 → β_0/c``.
+
+    Uniformly rescaling the encoder output should not change the
+    prediction of the adapted model: the preconditioner exactly
+    absorbs the scale into the metric.
+    """
+    torch.manual_seed(0)
+    z, y, beta_0, _ = _toy_problem(n=50, p=4, seed=13)
+    sigma = second_moment(z)
+    c = 7.0
+    z_c = z * c
+    beta_0_c = beta_0 / c
+    sigma_c = second_moment(z_c)
+
+    b1 = inner_rule_adapt(
+        z, y, beta_0, sigma,
+        lambda_h=0.1, eta=0.1, steps=3,
+        preconditioned=True,
+    )
+    b2 = inner_rule_adapt(
+        z_c, y, beta_0_c, sigma_c,
+        lambda_h=0.1, eta=0.1, steps=3,
+        preconditioned=True,
+    )
+    assert torch.allclose(z @ b1, z_c @ b2, atol=1e-4, rtol=1e-4)
+
+
+def test_inner_rule_preconditioned_create_graph() -> None:
+    """``preconditioned=True`` must remain differentiable for the outer
+    meta-loop (used by the bilevel trainer)."""
+    torch.manual_seed(0)
+    z, y, beta_0, _ = _toy_problem(n=40, p=5, seed=14)
+    beta_0 = beta_0.detach().clone().requires_grad_(True)
+    sigma = second_moment(z)
+
+    beta_final = inner_rule_adapt(
+        z, y, beta_0, sigma,
+        lambda_h=0.1, eta=0.05, steps=3,
+        create_graph=True, preconditioned=True,
+    )
+    assert beta_final.requires_grad
+
+    beta_final.pow(2).sum().backward()
+    assert beta_0.grad is not None
+    assert torch.isfinite(beta_0.grad).all()
+    assert beta_0.grad.norm().item() > 0.0
+
+
+# ---------------------------------------------------------------------------
 # Integration
 # ---------------------------------------------------------------------------
 

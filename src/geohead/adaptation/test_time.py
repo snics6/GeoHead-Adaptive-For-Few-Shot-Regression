@@ -150,6 +150,7 @@ def inner_rule_adapt(
     eps: float = 1e-6,
     *,
     create_graph: bool = False,
+    preconditioned: bool = False,
 ) -> Tensor:
     """``K``-step gradient descent on the inner loss (§4.3).
 
@@ -158,9 +159,29 @@ def inner_rule_adapt(
         pred = z @ beta
         loss = (1/n) * sum (pred - y)^2
              + lambda_h * (beta - beta_0)^T (sigma + eps I) (beta - beta_0)
-        beta := beta - eta * grad_beta loss
+        beta := beta - eta * P * grad_beta loss
 
-    with ``beta^{(0)} = beta_0`` and ``K = steps``.
+    with ``beta^{(0)} = beta_0`` and ``K = steps``.  The preconditioner
+    ``P`` is the identity for the default vanilla GD; when
+    ``preconditioned=True`` it is the **damped natural gradient**
+    ``P = (sigma + eps I)^{-1}`` — i.e., a Cholesky solve against the
+    same matrix that ``geo_adapt`` uses as its metric (§8.2).
+
+    Why preconditioning matters
+    ---------------------------
+    The vanilla gradient
+    ``(2/n) Z^T (Z beta - y) + 2 lambda_h sigma (beta - beta_0)``
+    scales as ``||Z||^2`` in the first term, so the effective step size
+    ``eta`` blows up when a DARE-trained encoder learns
+    large-norm features (the B2/P learners of the M3 sanity check).
+    Multiplying by ``(sigma + eps I)^{-1}`` removes that quadratic
+    dependence on the feature scale — the algorithm becomes **scale
+    invariant in** ``Z`` (up to floating-point error and the ``eps``
+    floor), so the same ``(eta, steps)`` schedule works at any encoder
+    magnitude.  In the limit ``eps -> 0, steps = 1, eta = 1/2,
+    lambda_h = 0`` the single preconditioned step reaches the OLS
+    solution in closed form; larger ``eta / lambda_h`` continuously
+    interpolates between β_0 and the (rank-stable) ridge regime.
 
     Parameters
     ----------
@@ -179,6 +200,11 @@ def inner_rule_adapt(
         caller must ensure ``beta_0`` (and relevant inputs) require
         gradients.  If ``False`` (default, test time) the iterate is
         detached between steps and the returned tensor is detached.
+    preconditioned:
+        If ``True``, apply the ``(sigma + eps I)^{-1}`` preconditioner
+        to the gradient at every step (see above).  If ``False``
+        (default — backward-compatible) the original vanilla GD rule
+        is used.
     """
     _, p = _validate_zy_beta(z, y, beta_0)
     _validate_sigma(sigma, p)
@@ -194,6 +220,16 @@ def inner_rule_adapt(
     if steps == 0:
         return beta_0.clone() if create_graph else beta_0.detach().clone()
 
+    # Compute the Cholesky factor of H = sigma + eps I once.  The
+    # factor is reused across all ``steps`` because H does not depend
+    # on beta.  When ``create_graph=True`` the factor remains in the
+    # graph so outer backprop can flow through sigma -> H -> L.
+    precond_chol: Tensor | None = None
+    if preconditioned:
+        eye = torch.eye(p, dtype=sigma.dtype, device=sigma.device)
+        h_mat = sigma + eps * eye
+        precond_chol = torch.linalg.cholesky(h_mat)
+
     if create_graph:
         # Trust the caller: beta_0 should already be part of the outer
         # computation graph (e.g., a meta-parameter).
@@ -207,7 +243,15 @@ def inner_rule_adapt(
         loss_reg = head_regularizer(beta, beta_0, sigma, epsilon=eps)
         loss = loss_mse + lambda_h * loss_reg
         grad = torch.autograd.grad(loss, beta, create_graph=create_graph)[0]
-        beta_next = beta - eta * grad
+        if preconditioned:
+            # solve H d = grad  ->  d = H^{-1} grad
+            assert precond_chol is not None
+            direction = torch.cholesky_solve(
+                grad.unsqueeze(-1), precond_chol
+            ).squeeze(-1)
+        else:
+            direction = grad
+        beta_next = beta - eta * direction
         if create_graph:
             beta = beta_next
         else:
