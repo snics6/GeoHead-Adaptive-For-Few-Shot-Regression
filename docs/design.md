@@ -198,9 +198,14 @@ $$
 
 初期値 $\beta^{(0)} = \beta_0$。
 
-> 採用方針: **PyTorch + `higher` ライブラリ** で、inner update を differentiable に
-> 展開し、二階微分を outer に流す（first-order 近似は ablation で比較可）。
-> ANIL なので二階微分のコストは head に対してのみ発生し、軽い。
+> 採用方針: head-only ANIL なので外部ライブラリは不要で、**PyTorch の
+> `torch.autograd.grad(..., create_graph=True)` で inner update を
+> differentiable に展開**し、二階微分を outer に流す（first-order 近似は
+> ablation で比較可）。ANIL なので二階微分のコストは head に対してのみ発生し、
+> 軽い。**実装上は train と test で全く同じ inner rule**
+> (`geohead.adaptation.test_time.inner_rule_adapt`) を再利用する（`create_graph=True`
+> が train、`create_graph=False` が test）ことで、§8.3 の train/test 一貫性要件を
+> 満たす。
 
 ### 4.4 outer loop
 
@@ -507,10 +512,15 @@ $\hat\Sigma_t$ は test corpus $T_k$ の support から推定（§8.3 inner-rule
 - **Test-time adaptation** on $T_k$: **training の inner rule をそのまま適用**
   （`K` step の gradient descent、geometry-aware head reg、$\hat\Sigma$ は test support から推定）。
 
-> **実装**: warm-up は既実装、bilevel trainer は `src/geohead/training/geohead.py`（M2.6）
-> に実装予定。Test-time inner-rule adaptation は
-> `src/geohead/adaptation/test_time.py::inner_rule_adapt` として既実装（`create_graph`
-> フラグで bilevel training 側の `higher` と統一 API）。
+> **実装**: warm-up・bilevel trainer はいずれも実装済み
+> (`src/geohead/training/warmup.py::warmup_train`,
+> `src/geohead/training/geohead.py::geohead_train`)。bilevel trainer は
+> `inner_rule_adapt(create_graph=True)` を呼び出して inner loop を
+> differentiable に展開し、outer 側で Adam 1 step で $(\theta, \beta_0)$ を
+> 更新する。Test-time 側は同じ関数を `create_graph=False` で呼ぶだけなので、
+> train/test の inner rule が厳密一致することはテスト
+> (`tests/training/test_geohead.py::test_geohead_training_inner_rule_matches_test_time_inner_rule`)
+> で担保されている。
 
 ### 8.4 追加 ablation（時間が許せば）
 
@@ -619,7 +629,7 @@ GeoHead-Adaptation-for-Few-shot-Regression/
 │   │   ├── __init__.py                  [x]
 │   │   ├── warmup.py                    [x]  §4.2 pooled supervised MSE
 │   │   ├── baseline.py                  [x]  §8.1 DARE+ridge 学習ループ
-│   │   └── geohead.py                   [ ]  §4 bilevel (M2.6 予定、higher)
+│   │   └── geohead.py                   [x]  §4 bilevel meta-trainer (ANIL + DARE)
 │   ├── evaluation/                      [ ]  (M2.7 予定)
 │   │   ├── metrics.py                   [ ]
 │   │   └── visualize.py                 [ ]
@@ -642,15 +652,20 @@ GeoHead-Adaptation-for-Few-shot-Regression/
     ├── models/                          [x]  test_encoder.py, test_head.py
     ├── losses/                          [x]  test_dare_gram.py, test_head_reg.py
     ├── adaptation/                      [x]  test_test_time.py
-    └── training/                        [x]  test_warmup.py, test_baseline.py
+    └── training/                        [x]  test_warmup.py, test_baseline.py, test_geohead.py
 ```
 
 **構成の差分（原案→実装）**:
 
 - `adaptation/ridge.py`, `inner_loop.py` → **`adaptation/test_time.py`** に統合。
   GD inner rule と closed-form ridge/geo は同じ $\beta$-空間で動く API (`z, y, β_0, ...` を受け取る)
-  なので 1 ファイルにまとめた。`create_graph=True` で bilevel 側の `higher` に接続する。
+  なので 1 ファイルにまとめた。`create_graph=True` フラグで train (bilevel) / test
+  の両方から同じ `inner_rule_adapt` を再利用できる。
 - `training/warmup.py` を追加（§4.2 を独立モジュールに）。
+- `training/geohead.py` は当初 `higher` 依存を想定していたが、**head-only ANIL
+  では外部ライブラリなしで同じ差分可能展開が書ける**ため、
+  `torch.autograd.grad(..., create_graph=True)` のみで実装。train/test で
+  inner rule が厳密一致する利点（§8.3）も得られる。
 - `tests/` は機能別サブディレクトリに整理（`tests/<module>/test_*.py`）。
 
 ---
@@ -668,7 +683,7 @@ GeoHead-Adaptation-for-Few-shot-Regression/
 - [x] **M2.3** warm-up trainer (`src/geohead/training/warmup.py`)
 - [x] **M2.4** test-time adaptation 三点セット (`ridge_adapt`, `geo_adapt`, `inner_rule_adapt`)
 - [x] **M2.5** baseline 1 (`DARE+ridge`) training loop (`src/geohead/training/baseline.py`)
-- [ ] **M2.6** GeoHead bilevel meta-trainer (`src/geohead/training/geohead.py`)（`higher` 経由）
+- [x] **M2.6** GeoHead bilevel meta-trainer (`src/geohead/training/geohead.py`)（head-only ANIL を `inner_rule_adapt(create_graph=True)` で unroll。`higher` には依存せず、train/test で同じ inner rule を共有）
 - [ ] **M2.7** evaluation runner（3-method × $T_k$ × $k$ × 20 seed の行列）
 
 ### M3: 提案手法の sanity check
