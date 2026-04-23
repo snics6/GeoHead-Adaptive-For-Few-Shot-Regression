@@ -57,3 +57,6 @@ wandb/
 # We keep the PDFs in references/ but ignore Windows zone identifiers
 references/*.Identifier
 references/*:Zone.Identifier
+
+# --- Scratch commit-message files (written by the assistant) ---
+.commit_msg_*.txt
