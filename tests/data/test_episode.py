@@ -12,6 +12,7 @@ import torch
 
 from geohead.data.episode import (
     EpisodeSizes,
+    sample_dare_pair,
     sample_episode,
     sample_random_pair,
 )
@@ -241,3 +242,87 @@ def test_sample_episode_works_on_toy_dataset() -> None:
     # Label consistency via index lookup into the original corpus.
     torch.testing.assert_close(ep.support_y, ds.train[i][1][ep.support_idx])
     torch.testing.assert_close(ep.query_y, ds.train[j][1][ep.query_idx])
+
+
+# ---------------------------------------------------------------------------
+# sample_dare_pair (baseline sampler, §8.1)
+# ---------------------------------------------------------------------------
+
+
+def test_sample_dare_pair_shapes() -> None:
+    corpora = _make_corpora(n=200, d_x=5)
+    g = torch.Generator().manual_seed(0)
+    b = sample_dare_pair(
+        corpora, "D1", "D2", source_size=32, target_size=48, generator=g
+    )
+    assert b.i == "D1" and b.j == "D2"
+    assert b.source_x.shape == (32, 5)
+    assert b.source_y.shape == (32,)
+    assert b.source_idx.shape == (32,)
+    assert b.target_x.shape == (48, 5)
+    assert b.target_y.shape == (48,)
+    assert b.target_idx.shape == (48,)
+
+
+def test_sample_dare_pair_provenance_matches_indices() -> None:
+    corpora = _make_corpora(n=200, d_x=5)
+    g = torch.Generator().manual_seed(321)
+    b = sample_dare_pair(corpora, "D2", "D3", generator=g)
+
+    x_i, y_i = corpora["D2"]
+    x_j, y_j = corpora["D3"]
+    torch.testing.assert_close(b.source_x, x_i[b.source_idx])
+    torch.testing.assert_close(b.source_y, y_i[b.source_idx])
+    torch.testing.assert_close(b.target_x, x_j[b.target_idx])
+    torch.testing.assert_close(b.target_y, y_j[b.target_idx])
+
+
+def test_sample_dare_pair_no_intra_batch_duplicates() -> None:
+    corpora = _make_corpora(n=100, d_x=5)
+    g = torch.Generator().manual_seed(7)
+    b = sample_dare_pair(
+        corpora, "D1", "D2", source_size=50, target_size=50, generator=g
+    )
+    # Without-replacement within each corpus.
+    assert len(set(b.source_idx.tolist())) == 50
+    assert len(set(b.target_idx.tolist())) == 50
+
+
+def test_sample_dare_pair_deterministic() -> None:
+    corpora = _make_corpora(n=200, d_x=5)
+    g1 = torch.Generator().manual_seed(2024)
+    g2 = torch.Generator().manual_seed(2024)
+    b1 = sample_dare_pair(corpora, "D1", "D2", generator=g1)
+    b2 = sample_dare_pair(corpora, "D1", "D2", generator=g2)
+    torch.testing.assert_close(b1.source_idx, b2.source_idx)
+    torch.testing.assert_close(b1.target_idx, b2.target_idx)
+
+
+def test_sample_dare_pair_rejects_same_corpus() -> None:
+    corpora = _make_corpora(n=100, d_x=5)
+    with pytest.raises(ValueError):
+        sample_dare_pair(corpora, "D1", "D1")
+
+
+def test_sample_dare_pair_rejects_unknown_corpus() -> None:
+    corpora = _make_corpora(n=100, d_x=5)
+    with pytest.raises(KeyError):
+        sample_dare_pair(corpora, "D1", "DOES_NOT_EXIST")
+    with pytest.raises(KeyError):
+        sample_dare_pair(corpora, "DOES_NOT_EXIST", "D2")
+
+
+def test_sample_dare_pair_rejects_oversized() -> None:
+    corpora = _make_corpora(n=20, d_x=5)
+    with pytest.raises(ValueError):
+        sample_dare_pair(corpora, "D1", "D2", source_size=30, target_size=5)
+    with pytest.raises(ValueError):
+        sample_dare_pair(corpora, "D1", "D2", source_size=5, target_size=30)
+
+
+def test_sample_dare_pair_rejects_nonpositive_sizes() -> None:
+    corpora = _make_corpora(n=100, d_x=5)
+    with pytest.raises(ValueError):
+        sample_dare_pair(corpora, "D1", "D2", source_size=0)
+    with pytest.raises(ValueError):
+        sample_dare_pair(corpora, "D1", "D2", target_size=-1)

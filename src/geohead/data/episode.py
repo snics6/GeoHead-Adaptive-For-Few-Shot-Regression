@@ -27,8 +27,10 @@ from torch import Tensor
 __all__ = [
     "EpisodeSizes",
     "EpisodeBatch",
+    "DareBatch",
     "sample_random_pair",
     "sample_episode",
+    "sample_dare_pair",
 ]
 
 
@@ -197,4 +199,109 @@ def sample_episode(
         batch_target_x=x_j.index_select(0, batch_target_idx),
         batch_target_y=y_j.index_select(0, batch_target_idx),
         batch_target_idx=batch_target_idx,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Baseline (§8.1) batch sampler: no support/query, just two labeled batches.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DareBatch:
+    """One labeled pair ``(B_i, B_j)`` for baseline DARE-GRAM training.
+
+    ``docs/design.md`` §8.1: the baseline has no inner loop, so it does
+    not require a support/query split.  A single ordered corpus pair
+    ``(i, j)`` is drawn, then one labeled batch per corpus.  Indices are
+    kept for provenance / debugging, exactly as in :class:`EpisodeBatch`.
+    """
+
+    i: str
+    j: str
+
+    source_x: Tensor
+    source_y: Tensor
+    source_idx: Tensor
+
+    target_x: Tensor
+    target_y: Tensor
+    target_idx: Tensor
+
+
+def sample_dare_pair(
+    corpora: Mapping[str, tuple[Tensor, Tensor]],
+    i: str,
+    j: str,
+    source_size: int = 64,
+    target_size: int = 64,
+    generator: torch.Generator | None = None,
+) -> DareBatch:
+    """Sample one labeled batch from ``D_i`` and one from ``D_j`` (§8.1).
+
+    Unlike :func:`sample_episode`, this helper does not separate
+    support / query; it just draws one batch per corpus.  Samples within
+    each corpus are drawn without replacement (``torch.randperm``); the
+    two corpora are independent.
+
+    Parameters
+    ----------
+    corpora:
+        Mapping from corpus name to ``(X, Y)``.  ``X`` has shape
+        ``(n, d_x)`` and ``Y`` has shape ``(n,)``.
+    i, j:
+        Source and target corpus names; must differ and both be keys of
+        ``corpora``.
+    source_size, target_size:
+        Per-batch sample sizes ``|B_i|`` and ``|B_j|``.
+    generator:
+        ``torch.Generator`` controlling all random draws; the caller is
+        responsible for choosing ``(i, j)``.
+    """
+    if i == j:
+        raise ValueError(f"source and target corpora must differ, got i == j == {i!r}")
+    if i not in corpora:
+        raise KeyError(f"unknown corpus {i!r}; available: {list(corpora)}")
+    if j not in corpora:
+        raise KeyError(f"unknown corpus {j!r}; available: {list(corpora)}")
+    if not isinstance(source_size, int) or source_size <= 0:
+        raise ValueError(f"source_size must be a positive int, got {source_size!r}")
+    if not isinstance(target_size, int) or target_size <= 0:
+        raise ValueError(f"target_size must be a positive int, got {target_size!r}")
+
+    x_i, y_i = corpora[i]
+    x_j, y_j = corpora[j]
+
+    if x_i.ndim != 2 or y_i.ndim != 1 or x_i.shape[0] != y_i.shape[0]:
+        raise ValueError(
+            f"corpus {i!r} must have X of shape (n, d_x) and Y of shape (n,); "
+            f"got {tuple(x_i.shape)} and {tuple(y_i.shape)}"
+        )
+    if x_j.ndim != 2 or y_j.ndim != 1 or x_j.shape[0] != y_j.shape[0]:
+        raise ValueError(
+            f"corpus {j!r} must have X of shape (n, d_x) and Y of shape (n,); "
+            f"got {tuple(x_j.shape)} and {tuple(y_j.shape)}"
+        )
+
+    if source_size > x_i.shape[0]:
+        raise ValueError(
+            f"source_size {source_size} exceeds corpus {i!r} size {x_i.shape[0]}"
+        )
+    if target_size > x_j.shape[0]:
+        raise ValueError(
+            f"target_size {target_size} exceeds corpus {j!r} size {x_j.shape[0]}"
+        )
+
+    source_idx = torch.randperm(x_i.shape[0], generator=generator)[:source_size]
+    target_idx = torch.randperm(x_j.shape[0], generator=generator)[:target_size]
+
+    return DareBatch(
+        i=i,
+        j=j,
+        source_x=x_i.index_select(0, source_idx),
+        source_y=y_i.index_select(0, source_idx),
+        source_idx=source_idx,
+        target_x=x_j.index_select(0, target_idx),
+        target_y=y_j.index_select(0, target_idx),
+        target_idx=target_idx,
     )
