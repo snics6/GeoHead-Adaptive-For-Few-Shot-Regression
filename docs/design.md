@@ -559,6 +559,25 @@ $\hat\Sigma_t$ は test corpus $T_k$ の support から推定（§8.3 inner-rule
 - 図: $k$ vs query MSE の sample efficiency curve（methods を色分け）
 - 図: head correction size と query MSE の相関散布図（理論式の実証）
 
+> **実装**: §9.1 / §9.2 の主指標と補助指標は
+> `src/geohead/evaluation/metrics.py` に、§9.3 の評価行列は
+> `src/geohead/evaluation/runner.py::evaluate_model` に、§9.3 の 2 つの
+> 図は `src/geohead/evaluation/visualize.py` に実装。subspace alignment
+> 可視化は M3 に回す（本体の sample-efficiency curve 後に追加）。
+>
+> **Fair-comparison invariant**: 同じ $(T_k, k, \text{seed})$ 三つ組の中で、
+> `none / ridge / geo / inner` の 4 method はすべて同一の support
+> sub-sample を見る（seed 固定の `torch.randperm` で決定論的に抽出）。
+> これにより method 差が support 抽選ノイズから分離される。
+> テスト
+> (`tests/evaluation/test_runner.py::test_evaluate_model_all_methods_see_same_support_sample`)
+> で担保。
+>
+> **`sigma_hat` の出どころ**: §9.2 の $\hat\Sigma_t$ は「test 時に利用可能な
+> target feature」のみから推定する必要があるので、**test support の
+> $k$ サンプルから** `second_moment(z_sup)` を計算し、geo head-reg / inner
+> rule / 補助指標 `delta_geo` のすべてで共用する。
+
 ---
 
 ## 10. ハイパーパラメータ初期値
@@ -630,9 +649,11 @@ GeoHead-Adaptation-for-Few-shot-Regression/
 │   │   ├── warmup.py                    [x]  §4.2 pooled supervised MSE
 │   │   ├── baseline.py                  [x]  §8.1 DARE+ridge 学習ループ
 │   │   └── geohead.py                   [x]  §4 bilevel meta-trainer (ANIL + DARE)
-│   ├── evaluation/                      [ ]  (M2.7 予定)
-│   │   ├── metrics.py                   [ ]
-│   │   └── visualize.py                 [ ]
+│   ├── evaluation/                      [x]  §9 eval suite
+│   │   ├── __init__.py                  [x]
+│   │   ├── metrics.py                   [x]  query_mse / mae, head_correction_l2 / geo
+│   │   ├── runner.py                    [x]  evaluate_model (4-method × T_k × k × seed)
+│   │   └── visualize.py                 [x]  sample-efficiency curve, delta-vs-MSE scatter
 │   └── utils/                           [ ]
 │       ├── seed.py                      [ ]
 │       └── config.py                    [ ]
@@ -652,7 +673,8 @@ GeoHead-Adaptation-for-Few-shot-Regression/
     ├── models/                          [x]  test_encoder.py, test_head.py
     ├── losses/                          [x]  test_dare_gram.py, test_head_reg.py
     ├── adaptation/                      [x]  test_test_time.py
-    └── training/                        [x]  test_warmup.py, test_baseline.py, test_geohead.py
+    ├── training/                        [x]  test_warmup.py, test_baseline.py, test_geohead.py
+    └── evaluation/                      [x]  test_metrics.py, test_runner.py, test_visualize.py
 ```
 
 **構成の差分（原案→実装）**:
@@ -684,7 +706,11 @@ GeoHead-Adaptation-for-Few-shot-Regression/
 - [x] **M2.4** test-time adaptation 三点セット (`ridge_adapt`, `geo_adapt`, `inner_rule_adapt`)
 - [x] **M2.5** baseline 1 (`DARE+ridge`) training loop (`src/geohead/training/baseline.py`)
 - [x] **M2.6** GeoHead bilevel meta-trainer (`src/geohead/training/geohead.py`)（head-only ANIL を `inner_rule_adapt(create_graph=True)` で unroll。`higher` には依存せず、train/test で同じ inner rule を共有）
-- [ ] **M2.7** evaluation runner（3-method × $T_k$ × $k$ × 20 seed の行列）
+- [x] **M2.7** evaluation runner (`src/geohead/evaluation/`)
+  - `metrics.py` (query MSE/MAE, head correction L2 / geo)
+  - `runner.py` (`evaluate_model`: 4-method × 2 corpora × 5 k-shot × 20 seed、fair-comparison invariant つき)
+  - `visualize.py` (sample efficiency curve、head correction vs MSE scatter)
+  - 4 method は `{none, ridge, geo, inner}`（`none` は β_0 のまま、§9.3 に加えて sanity 用）
 
 ### M3: 提案手法の sanity check
 - [ ] proposed が toy で Baseline 1 / 2 を上回るか確認（最初の end-to-end 実験）
