@@ -652,19 +652,15 @@ GeoHead-Adaptation-for-Few-shot-Regression/
 │   │   ├── metrics.py                   [x]  query_mse / mae, head_correction_l2 / geo
 │   │   ├── runner.py                    [x]  evaluate_model (4-method × T_k × k × seed)
 │   │   └── visualize.py                 [x]  sample-efficiency curve, delta-vs-MSE scatter
+│   ├── experiments/                     [x]  end-to-end drivers
+│   │   ├── __init__.py                  [x]
+│   │   └── sanity.py                    [x]  M3 sanity check (B1/B2/P × 4 adapt)
 │   └── utils/                           [ ]
 │       ├── seed.py                      [ ]
 │       └── config.py                    [ ]
-├── experiments/                         [ ]
-│   ├── configs/
-│   │   ├── baseline_dare_ridge.yaml     [ ]
-│   │   ├── baseline_dare_geo.yaml       [ ]
-│   │   └── geohead_full.yaml            [ ]
-│   ├── scripts/
-│   │   ├── run_baseline.py              [ ]
-│   │   ├── run_geohead.py               [ ]
-│   │   └── run_all.sh                   [ ]
-│   └── results/                         [ ]  (gitignore)
+├── scripts/                             [x]
+│   └── m3_sanity_check.py               [x]  CLI wrapper around experiments.sanity
+├── results/                             [ ]  (gitignore; written by scripts/)
 └── tests/
     ├── __init__.py                      [x]
     ├── data/                            [x]  test_toy.py, test_episode.py
@@ -672,7 +668,8 @@ GeoHead-Adaptation-for-Few-shot-Regression/
     ├── losses/                          [x]  test_dare_gram.py, test_head_reg.py
     ├── adaptation/                      [x]  test_test_time.py
     ├── training/                        [x]  test_warmup.py, test_baseline.py, test_geohead.py
-    └── evaluation/                      [x]  test_metrics.py, test_runner.py, test_visualize.py
+    ├── evaluation/                      [x]  test_metrics.py, test_runner.py, test_visualize.py
+    └── experiments/                     [x]  test_sanity.py
 ```
 
 **構成の差分（原案→実装）**:
@@ -711,7 +708,18 @@ GeoHead-Adaptation-for-Few-shot-Regression/
   - 4 method は `{none, ridge, geo, inner}`（`none` は β_0 のまま，§9.3 に加えて sanity 用）
 
 ### M3: 提案手法の sanity check
-- [ ] proposed が toy で Baseline 1 / 2 を上回るか確認（最初の end-to-end 実験）
+- [x] **M3** end-to-end sanity driver (`src/geohead/experiments/sanity.py`, `scripts/m3_sanity_check.py`)
+  - 3 学習者 `{B1: source-only, B2: DARE+ridge, P: GeoHead}` が**共通の warm-up
+    チェックポイント**から出発し，各々に対して §9.3 の 4-method evaluation
+    matrix (`none / ridge / geo / inner`) を走らせる
+  - 出力: `records.jsonl`（long-format，`learner` キー付き），`aggregated.csv`
+    （seed を潰した mean ± 95 % CI，per `(learner, corpus, k_shot, method)`），
+    `plots/`（per-learner と per-method の 2 系統 × `head_correction` scatter），
+    `summary.md`（markdown table），`history/{warmup,baseline,geohead}.json`
+  - master seed から全副次乱数（toy data, encoder init, warm-up shuffle,
+    baseline / geohead episode gen, eval support sub-sampling）を派生させる
+    ので同じ config は bit-identical な artefact を再生する
+  - `--smoke` フラグで ≈5 s の縮小実行．フル実行は ~15 min（CPU, 1500 outer_steps）
 
 ### M4: 実験本番
 - [ ] 2 test corpora × 5 support sizes × 20 seed × 3 methods

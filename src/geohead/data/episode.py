@@ -184,6 +184,14 @@ def sample_episode(
         n_j, sizes.query, sizes.batch_target, generator
     )
 
+    # ``torch.randperm`` is CPU-only when no device arg is given, but
+    # ``x_i`` / ``x_j`` may live on CUDA.  Move indices to the data
+    # device so ``index_select`` does not complain.
+    support_idx = support_idx.to(x_i.device)
+    batch_source_idx = batch_source_idx.to(x_i.device)
+    query_idx = query_idx.to(x_j.device)
+    batch_target_idx = batch_target_idx.to(x_j.device)
+
     return EpisodeBatch(
         i=i,
         j=j,
@@ -294,6 +302,9 @@ def sample_dare_pair(
 
     source_idx = torch.randperm(x_i.shape[0], generator=generator)[:source_size]
     target_idx = torch.randperm(x_j.shape[0], generator=generator)[:target_size]
+    # See sample_episode: align index device with data device for CUDA.
+    source_idx = source_idx.to(x_i.device)
+    target_idx = target_idx.to(x_j.device)
 
     return DareBatch(
         i=i,

@@ -235,7 +235,13 @@ def warmup_train(
 
     for _epoch in range(config.epochs):
         if config.shuffle:
-            perm = torch.randperm(n, generator=generator, device=x_pool.device)
+            # Generate on the generator's device (typically CPU) then move to
+            # data device — mixing a CPU generator with a CUDA target device
+            # raises RuntimeError in torch.randperm.
+            gen_device = generator.device if generator is not None else torch.device("cpu")
+            perm = torch.randperm(n, generator=generator, device=gen_device)
+            if perm.device != x_pool.device:
+                perm = perm.to(x_pool.device)
         else:
             perm = torch.arange(n, device=x_pool.device)
 

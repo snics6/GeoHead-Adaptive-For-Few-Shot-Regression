@@ -44,9 +44,15 @@ htmlcov/
 Thumbs.db
 
 # --- Project specific ---
+# M3+ experiment artefacts are written under results/ by scripts/*.
+# Keep the source (src/geohead/experiments/, scripts/) under version control
+# but never commit the generated plots / records / histories.
+results/
 experiments/results/
 experiments/checkpoints/
 experiments/logs/
+checkpoints/
+logs/
 *.pt
 *.pth
 *.npy
