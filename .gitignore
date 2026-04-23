@@ -1,0 +1,59 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+
+# --- Virtual envs (uv default; we use pyenv-virtualenv but keep this just in case) ---
+.venv/
+venv/
+env/
+.env
+
+# --- uv ---
+# uv.lock should be committed; only ignore caches
+.uv/
+
+# --- Testing & coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# --- IDEs ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Project specific ---
+experiments/results/
+experiments/checkpoints/
+experiments/logs/
+*.pt
+*.pth
+*.npy
+*.npz
+wandb/
+
+# --- References ---
+# We keep the PDFs in references/ but ignore Windows zone identifiers
+references/*.Identifier
+references/*:Zone.Identifier
