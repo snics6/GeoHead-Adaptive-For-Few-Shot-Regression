@@ -796,6 +796,69 @@ v5 で発見した「**訓練時の rank-edge は GeoHead の signal 源，eval 
     - `python -m scripts.m4_main --smoke` で end-to-end smoke．
     - `--n-train-seeds`, `--n-seeds`, `--baseline-outer-steps`, `--geohead-outer-steps` で schedule 上書き可．
 
+#### M4 v2: 軸統一 + 比較表機能 (`results/m4_main_v2/`)
+
+v1 と完全同一の seed・hyperparams（`master_seed=0, n_train_seeds=3, eval.n_seeds=20, outer_steps=5000`）で再実行，**1 セル当たり 60 標本**の 95 % CI 付き．差分は post-processing のみ:
+
+- **per-corpus で全 plot の y 軸を log-scale に統一**：`_compute_unified_axes` が `(min(mean-CI)*0.85, max(mean+CI)*1.25)` を計算し，`sample_efficiency_{corpus}_{learner}.png` と `*_by_{method}.png` の全てに適用．これにより P／B1／B2 の PNG を並べた時に同スケールで対比可能．
+- **`comparison.md` 出力**：5 セクション構成で paper-ready な比較資料として独立．headline winner per `(corpus, k)`，P-vs-B1／B2 の相対改善率，learner 内の method ranking（Borda），bold-best 付き完全 MSE 表，head-correction sanity（`‖β̂−β₀‖₂ / Δ_geo` 比）．
+
+#### M4 v2 で確定した 4 つの結論
+
+**結論 1：GeoHead (P) は warm-up として全方位で最強**
+
+T2（外挿）の最大 $k=24$ で 95 % CI が完全に重ならない明瞭な順序：
+
+- **P/ridge = 0.181 ± 0.013**
+- B1/ridge = 0.256 ± 0.027 → **P が −29.4 %**
+- B2/ridge = 0.301 ± 0.046 → **P が −39.9 %**
+
+T1（内挿）でも `P/none = 0.0652 ± 0.0035` が `B1/none = 0.0910 ± 0.0062` を −28.4 % 下回り，どの test-time 手法に対しても P 由来の特徴が最も効率よく head 補正できる．**meta-trained $\beta_0$ が pooled supervised $\beta_0$ より target-optimal に近い**ことの 60 標本ベースの直接的な実験的裏付け．
+
+**結論 2：最適 adapt 手法は $k$ に応じて切り替わる**
+
+| corpus | $k \le 4$ | $k = 8$ | $k \ge 16$ |
+|---|---|---|---|
+| T1 | P / `none` または P / `inner` | P / `inner` | **P / `none`**（P / `ridge` も同等） |
+| T2 | P / `inner` | **P / `ridge`** | **P / `ridge`** |
+
+- 外挿（T2）では $k$ が増えるほど closed-form ridge が圧勝．meta-trained $\beta_0$ から ridge 補正で bias-variance を最適化する経路が最速．
+- 内挿（T1）では meta-trained $\beta_0$ がほぼ既に target-optimal で，下手にいじると variance が bias 削減を上回る → `none` が安全な選択．これは「meta-init の質」を端的に示す．
+
+**結論 3：DARE-GRAM (B2) の "head norm blow-up" を定量化**
+
+$k=24$ における $\| \hat\beta - \beta_0 \|_2 / \Delta_{\text{geo}}$ 比（`comparison.md §5`）:
+
+| learner | corpus | `geo` | `inner` | `ridge` |
+|---|---|---|---|---|
+| P | T1 | 12.93 | 18.07 | **5.29** |
+| P | T2 | 5.85 | 8.06 | **1.64** |
+| B1 | T1 | 13.92 | 19.49 | 6.40 |
+| B1 | T2 | 5.92 | 8.23 | 2.20 |
+| **B2** | T1 | **103.07** | **113.52** | 5.08 |
+| **B2** | T2 | **45.05** | **45.29** | 1.96 |
+
+B2 は `geo` / `inner` で **P や B1 の 5–10 倍**の比率を示す．これは「$\Delta_{\text{geo}}$ は同程度なのに $\| \hat\beta - \beta_0 \|_2$ だけが暴れている」状態，すなわち **$\hat\Sigma_S$ の null/低固有値方向に head を伸ばしているが，Q-error には寄与しない** 失敗モード．DARE で source/target の Gram を揃える副作用で feature scale が重要でない方向に膨張した結果と解釈でき，**geometry-aware head 正則化の不在が few-shot 体制で具体的にどう壊れるか**を可視化する重要な観察．
+
+**結論 4：`ridge` が最も robust，`geo` は $k$ 大で崩壊**
+
+method ranking（learner 内 Borda 平均，n=10 セル）：
+
+- P : `inner` 1.80 < `ridge` 2.30 < `none` 2.70 < `geo` 3.20
+- B1: `inner` 1.90 < `ridge` 2.00 < `geo` 3.00 < `none` 3.10
+- B2: `ridge` 2.00 < `none` = `inner` 2.20 < `geo` 3.60
+
+- **`ridge`** は全 learner / 全 $k$ で単調 monotone-decreasing，B2/ridge T2 ですら $k=4 \to 24$ で $0.65 \to 0.30$ と素直に効く．**論文では deployable な default 推奨手法**．
+- **`geo`** は $k$ 大で逆に劣化（P/`geo` T1 $k=24 = 0.176$ vs $k=8 = 0.077$）．closed-form geometry-aware は $\hat\Sigma_S$ 推定誤差に敏感で，$k$ が増えると bias/variance の balance が崩れる．M5 で shrinkage（Ledoit-Wolf 等）で改善余地あり．
+- **`inner`** は $k \le 8$ で勝つが $k \ge 16$ では `ridge` に逆転される（`P/inner k=24 T2 = 0.339` vs `P/ridge = 0.181`）．`inner_steps=5` の有限ステップが $k$ 大で過小に．M5 で `inner_steps` sweep．
+
+#### M4 から M5 に引き継ぐ ablation 候補
+
+1. **head 正則化 $\lambda_h$ sweep**：結論 3 の "head norm blow-up" を `B2 + head-reg` で抑えられるかを直接検証．論文の **geometry-aware head reg の必要性主張** を切り分ける核心実験．
+2. **preconditioned inner × `inner_steps` sweep**：結論 4 の `inner` の $k$ 大での劣化を `inner_steps ∈ {1, 3, 5, 10}` で改善できるか，preconditioner の寄与を非対称 ablation で測る．
+3. **DARE 重み $\alpha_{\cos}, \gamma_{\text{scale}}$ sweep**：`B2 vs B1` の差は本質的に DARE 効果のみ．T2 で `B2 > B1`（悪化）になっているので **DARE は T2 への外挿には寄与しない or 害**という強い反論材料になる可能性．
+4. **shrinkage 系 $\hat\Sigma_S$ 推定**：結論 4 の `geo` 崩壊の修復候補．Ledoit-Wolf や adaptive $\varepsilon$ で `geo` を `ridge` 並に robust にできるか．
+
 ### M5: 分析と ablation
 - [ ] subspace 可視化（Gram spectra, cos similarity, principal angles）
 - [ ] ablation（`w/o DARE`, `w/o headreg`, `first-order`, `full-MAML`, `single-source`）
