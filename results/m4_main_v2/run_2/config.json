@@ -1,0 +1,96 @@
+{
+  "toy": {
+    "d_x": 16,
+    "p_star": 32,
+    "phi_hidden": [
+      64,
+      32
+    ],
+    "noise_sigma": 0.05,
+    "mu_norm": 2.0,
+    "cov_log_std": 0.5,
+    "head_shift_train": 4.0,
+    "mu_norm_extrap": 4.0,
+    "cov_log_std_extrap": 1.0,
+    "head_shift_extrap": 6.0,
+    "seed": 0
+  },
+  "n_train_per_corpus": 2000,
+  "n_test_support": 200,
+  "n_test_query": 1000,
+  "encoder_hidden": [
+    128,
+    128
+  ],
+  "encoder_p": 32,
+  "warmup": {
+    "epochs": 30,
+    "lr": 0.001,
+    "batch_size": 256,
+    "weight_decay": 0.0,
+    "shuffle": true
+  },
+  "baseline": {
+    "outer_steps": 5000,
+    "lr": 0.001,
+    "batch_size_source": 64,
+    "batch_size_target": 64,
+    "alpha_cos": 0.01,
+    "gamma_scale": 0.0001,
+    "threshold": 0.99,
+    "dare_eps": 1e-06,
+    "weight_decay": 0.0,
+    "log_every": 200
+  },
+  "geohead": {
+    "outer_steps": 5000,
+    "outer_lr": 0.001,
+    "weight_decay": 0.0,
+    "inner_steps": 5,
+    "inner_lr": 0.1,
+    "lambda_h": 0.1,
+    "head_reg_eps": 0.0001,
+    "preconditioned_inner": true,
+    "lambda_D": 1.0,
+    "alpha_cos": 0.01,
+    "gamma_scale": 0.0001,
+    "threshold": 0.99,
+    "dare_eps": 1e-06,
+    "support_size": 32,
+    "query_size": 64,
+    "batch_source_size": 64,
+    "batch_target_size": 64,
+    "log_every": 200
+  },
+  "eval": {
+    "k_shots": [
+      1,
+      4,
+      8,
+      16,
+      24
+    ],
+    "n_seeds": 20,
+    "methods": [
+      "none",
+      "ridge",
+      "geo",
+      "inner"
+    ],
+    "ridge_lambda": 0.1,
+    "geo_lambda": 0.1,
+    "inner_lambda_h": 0.1,
+    "inner_lr": 0.1,
+    "inner_steps": 5,
+    "head_reg_eps": 0.0001,
+    "inner_preconditioned": true,
+    "seed_base": 0
+  },
+  "learners": [
+    "B1",
+    "B2",
+    "P"
+  ],
+  "device": "cuda",
+  "master_seed": 2000000
+}
