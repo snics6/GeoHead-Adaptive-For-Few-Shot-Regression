@@ -197,7 +197,7 @@ $$
 初期値 $\beta^{(0)} = \beta_0$．前処理行列 $P$ は次の二択:
 
 - **vanilla GD**（`preconditioned=False`，backward-compat default）: $P = I$．
-- **damped natural gradient**（`preconditioned=True`，M3 v5 以降の推奨）: $P = (\hat\Sigma_S + \varepsilon I)^{-1}$．すなわち，**§8.2 の `geo_adapt` と同じ計量**で勾配を前処理する．
+- **damped natural gradient**（`preconditioned=True`，M3 v5 以降の推奨）: $P = (\hat\Sigma_S + \varepsilon I)^{-1}$．すなわち，**§8.5 の `geo_adapt` と同じ計量**で勾配を前処理する．
 
 **前処理の動機**: vanilla 勾配は
 $\nabla L_{\text{inner}} = \tfrac{2}{|S|}Z^\top(Z\beta - y) + 2\lambda_h \hat\Sigma_S (\beta - \beta_0)$
@@ -209,7 +209,7 @@ $\nabla L_{\text{inner}} = \tfrac{2}{|S|}Z^\top(Z\beta - y) + 2\lambda_h \hat\Si
 > ablation で比較可）．ANIL なので二階微分のコストは head に対してのみ発生し，
 > 軽い．**実装上は train と test で全く同じ inner rule**
 > (`geohead.adaptation.test_time.inner_rule_adapt`) を再利用する（`create_graph=True`
-> が train，`create_graph=False` が test）ことで，§8.3 の train/test 一貫性要件を
+> が train，`create_graph=False` が test）ことで，§8.4 の train/test 一貫性要件を
 > 満たす．前処理フラグ `preconditioned` は `GeoHeadConfig.preconditioned_inner` / `EvalConfig.inner_preconditioned` から同値に伝搬される（train/test で必ず揃える）．Cholesky solve は微分可能なので outer の二階微分も自然に流れる．
 
 ### 4.4 outer loop
@@ -240,7 +240,7 @@ outer の update 対象: $(\theta, \beta_0)$．
 > **実装ノート**: `src/geohead/losses/dare_gram.py` の `dare_gram_regularizer` は
 > **regularizer 成分のみ** $\alpha_{\cos} L_{\cos} + \gamma_{\text{scale}} L_{\text{scale}}$ を返し，
 > $L_{\text{src}}$ は caller 側で別途計算する（GeoHead outer では $L_{\text{src}}(B_i)$,
-> §8.1 baseline では pooled $L_{\text{src}}(B_i \cup B_j)$ と，使い分けが必要なため）．
+> §8.3 B2 では $L_{\text{src}}(S_i \cup B_i)$ と，使い分けが必要なため）．
 
 ### 4.5 学習スキーマ全体
 
@@ -470,130 +470,160 @@ Init head β_0: Linear(p=32 -> 1),  meta-learned
 
 ## 8. 比較対象（3 学習者 × 4 適応手法）
 
-比較は **2 段の直積構造**：3 種類の学習者 $\{B_1, B_2, P\}$ で得た
+比較は **2 段の直積構造**: 3 種類の学習者 $\{B_1, B_2, P\}$ で得た
 $(\theta, \beta_0)$ に対して，4 種類の test-time head 適応
 $\{\text{none}, \text{ridge}, \text{geo}, \text{inner}\}$ をすべて組み合わせて評価する．
-すなわち **学習者 = encoder と初期 head の作り方**，
+すなわち **学習者 = encoder と初期 head の作り方**,
 **適応 = test 時の head 更新規則**として完全に分離する．
 
-すべての学習者は
+### 8.0 公平性プロトコル（同一サンプル原理）
 
-- **同じ encoder アーキテクチャ**（§5），
-- **同じ training データ条件**（3 training corpora $D_1, D_2, D_3$ のみ使用．
-  test corpora $T_1, T_2$ は学習中一切触らない），
-- **同じ test-time 評価プロトコル**（§9）
+3 学習者は以下を **厳密に共有** する:
 
-を共有する．**ただし学習中の勾配ステップ数とサンプル消費量は学習者間で同一ではない**
-（後述 §8.5）．
+1. **同じ encoder アーキテクチャ**（§5）と同じ初期化（master seed から決定論的）．
+2. **同じ training データプール** $D_1, D_2, D_3$．test corpora $T_1, T_2$ は学習中一切触らない．
+3. **同じ Phase 0 (warm-up) checkpoint**．3 学習者は warm-up 後の同一の $(\theta_{\text{wu}}, \beta_{0,\text{wu}})$ から Phase 1 を開始する．
+4. **同じ unified episode sampler**．Phase 1 の各 step $t$ で，1 つの共有 RNG が同じ
+   $(i_t, j_t, \text{idx}^{S}_{t}, \text{idx}^{B_i}_{t}, \text{idx}^{Q}_{t}, \text{idx}^{B_j}_{t})$
+   を引き，3 学習者は **完全に同じ index** で同じ raw データを見る．
+5. **同じ test-time プロトコル**．`evaluate_model` の `seed_base` も 3 学習者で共有
+   (`src/geohead/experiments/sanity.py:478-480`)．これにより
+   **同じ $(T_k, k, \text{eval seed})$** ⇒ **同じ support/query** が保証される．
 
-### 8.1 学習者 B1: source-only
+学習者ごとに異なるのは「**この共有 episode のどの split を,どの損失項にどう食わせるか**」
+だけ．**サンプル系列としては 3 学習者で 1 ビットも違わない**．
 
-- **Phase 0 (warm-up)**: 3 corpora をプールした教師あり MSE を
-  Adam で `epochs=30, batch_size=256` 最小化する．
-  これにより $(\theta, \beta_0)$ の初期点を得る
-  (`src/geohead/training/warmup.py::warmup_train`)．
-- **Phase 1**: **追加学習なし**．warm-up 終了時点の $(\theta, \beta_0)$ を
-  そのまま B1 の最終モデルとする
-  (`src/geohead/experiments/sanity.py:492-493`)．
-- **役割**: 「meta-learning も DARE-GRAM も無い，純粋な source-only training が
-  どこまで届くか」の対照群．
+> **実装ノート**: 現在 (M3/M4) の実装では (4) が満たされておらず，B2 は `master_seed+3`，
+> P は `master_seed+4` の独立 RNG を使用，B1 は Phase 1 を持たない．これらは
+> §8.7 の TODO で揃える．現在の M4 v2 結果はこの不揃い条件下のもの．
 
-### 8.2 学習者 B2: DARE-GRAM (Nejjar et al. 2023)
+### 8.1 共通 unified episode（1 step あたり）
 
-- **Phase 0**: B1 と同一の warm-up checkpoint を継承．
-- **Phase 1**: episode-based DARE-GRAM training を `outer_steps=5000` 回す
-  (`src/geohead/training/baseline.py::baseline_train`)．
-  各 step で：
-  - 順序対 $(i, j)$ を $\{D_1, D_2, D_3\}$ から $i \ne j$ で一様サンプル
-  - source minibatch $B_s \subset D_i$（$|B_s|=64$），
-    target minibatch $B_t \subset D_j$（$|B_t|=64$）
-  - **supervised MSE は `B_s` のラベルのみ**を使用：
-    $L_{\text{src}} = \frac{1}{|B_s|}\sum_{(x,y) \in B_s} (\beta^\top \phi_\theta(x) - y)^2$
-  - **DARE-GRAM 整列項**を $Z_s = \phi_\theta(B_s)$，$Z_t = \phi_\theta(B_t)$ から計算：
-    - $L_{\cos}\big(\hat G_s^+, \hat G_t^+\big)$（inverse Gram の主成分の cosine 距離）
-    - $L_{\text{scale}}\big(\lambda_{\max}\hat G_s^+, \lambda_{\max}\hat G_t^+\big)$（最大固有値の log 比二乗）
-  - 最終 loss: $L_{\text{src}} + \alpha_{\cos} L_{\cos} + \gamma_{\text{scale}} L_{\text{scale}}$
-    （$\lambda_D$ は掛けず，$\alpha_{\cos}, \gamma_{\text{scale}}$ 自身で重み調整）
-- **役割**: 既存の代表的 UDA 回帰手法．
-  meta-learning なしで「**特徴の幾何**だけを揃える」ことの効果を測る．
+各 step $t$ で以下を **1 回だけ** 引き，3 学習者がすべてここから副集合を取り出す:
 
-### 8.3 学習者 P: GeoHead（提案手法）
+| 名前 | 出所 | サイズ | 役割 |
+|---|---|---|---|
+| $S_i$  | $D_i$ | 32 | inner support (P) / 追加 supervised (B1, B2) |
+| $B_i$  | $D_i \setminus S_i$ | 64 | DARE source batch (B2, P) / supervised (B1) |
+| $Q_j$  | $D_j$ | 64 | outer query (P) / 追加 supervised (B1) / DARE 補強 (B2) |
+| $B_j$  | $D_j \setminus Q_j$ | 64 | DARE target batch (B2, P) / supervised (B1) |
 
-- **Phase 0**: B1, B2 と同一の warm-up checkpoint を継承．
-- **Phase 1**: §4 の bilevel ANIL を `outer_steps=5000` 回す
-  (`src/geohead/training/geohead.py::geohead_train`)．
-  各 step で：
-  - 順序対 $(i, j)$ を $i \ne j$ で一様サンプル
-  - support $S_i \subset D_i$（$|S_i|=32$），query $Q_j \subset D_j$（$|Q_j|=64$），
-    DARE 用 source/target $B_i \subset D_i$（64），$B_j \subset D_j$（64）
-  - **inner（仮想 head 更新, 5 step）**:
-    `inner_rule_adapt(create_graph=True)` で
-    $\beta^* = \beta^*(\theta, \beta_0; S_i)$ を $\theta$ に対して微分可能に展開．
+ここで $i \ne j$ は同じ共有 RNG から引かれた順序対．$(S_i, B_i)$ は $D_i$ 内で disjoint，
+$(Q_j, B_j)$ は $D_j$ 内で disjoint（既存実装の制約と整合 — `tests/data/test_episode.py`）．
+**1 step の延べ raw サンプル数** $= |S_i|+|B_i|+|Q_j|+|B_j| = 32+64+64+64 = 224$.
+
+### 8.2 学習者 B1: source-only (Phase 1 あり)
+
+- **Phase 0**: pooled supervised warm-up（共通）．
+- **Phase 1**: `outer_steps=5000`．各 step で共有 episode を取り,
+  **4 split の全ラベルをプール** して supervised MSE を 1 step 最小化:
+
+$$
+L_{B_1}(t) = \frac{1}{224}\sum_{(x,y) \in S_i \cup B_i \cup Q_j \cup B_j} \big(\beta^\top \phi_\theta(x) - y\big)^2.
+$$
+
+- **何が無いか**: DARE-GRAM 項なし，bilevel 構造なし，inner loop なし．
+- **役割**: 「同じ予算 (5000 step + 同一サンプル系列) を pure supervised に投入したら何が出るか」の
+  **真の対照群**．M3/M4 v2 の B1 (Phase 1 なし) よりも厳密な lower bound．
+
+### 8.3 学習者 B2: DARE-GRAM (Nejjar et al. 2023)
+
+- **Phase 0**: 共通．
+- **Phase 1**: `outer_steps=5000`．各 step で共有 episode を取り,
+
+$$
+L_{B_2}(t) = \underbrace{\frac{1}{|S_i \cup B_i|}\sum_{(x,y) \in S_i \cup B_i} \big(\beta^\top \phi_\theta(x) - y\big)^2}_{L_{\text{src}}}
+\;+\; \alpha_{\cos} L_{\cos}\big(Z_{S_i \cup B_i},\, Z_{Q_j \cup B_j}\big)
+\;+\; \gamma_{\text{scale}} L_{\text{scale}}\big(\cdot\big).
+$$
+
+  ここで $L_{\cos}, L_{\text{scale}}$ は §3 の DARE-GRAM 整列項（inverse Gram の cosine と
+  最大固有値の log 比二乗）．**ラベルは source 側 96 サンプル分のみ** 使用，target 側は
+  feature だけ DARE で使う．
+
+- **何が無いか**: support/query を分けた仮想更新は無し（**MAML/bilevel ではない**）．
+  単一の outer 損失を Adam で 1 step．
+- **役割**: 既存の代表的 UDA 回帰手法．meta-learning なしで
+  「**特徴の幾何**だけを揃える」ことの効果を測る．
+
+### 8.4 学習者 P: GeoHead（提案手法）
+
+- **Phase 0**: 共通．
+- **Phase 1**: `outer_steps=5000`．各 step で共有 episode を取り,
+
+  - **inner (仮想 head 更新, 5 step)**: `inner_rule_adapt(create_graph=True)` で
+    support $S_i$ から $\beta^*(\theta, \beta_0; S_i)$ を $\theta$ に対して微分可能に展開．
     inner objective は §4.3 の geometry-aware head reg + supervised MSE．
-  - **outer（真の更新）**:
-    $L_{\text{outer}} = \frac{1}{|Q_j|}\big\|\beta^{*\top} \phi_\theta(Q_j) - y_{Q_j}\big\|^2 + L_{\text{src}}(B_i) + \lambda_D \cdot \text{DARE}(B_i, B_j)$
-    を Adam で 1 step．$\theta$ と $\beta_0$ が同時に更新される．
-- **Test-time adaptation** との整合: 4 適応手法のうち `inner` は
-  **訓練時の inner rule をそのまま** $\beta^* = \text{inner\_rule}(S_t, \beta_0; \theta)$ として
-  test 側でも呼ぶ．`create_graph=False` のみが違うので，**train と test の inner 作用素は
-  関数として厳密一致**する（テスト
-  `tests/training/test_geohead.py::test_geohead_training_inner_rule_matches_test_time_inner_rule`
-  で担保）．
-- **役割**: support → 仮想 head 更新 → query での真の更新，という
-  **bilevel 構造そのもの**が，DARE 単独 (B2) や source-only (B1) を
-  超える表現を生むかを検証．
+  - **outer (真の更新)**:
 
-### 8.4 4 つの test-time 適応手法（§4.3 と同じ）
+$$
+L_{P}(t) = \frac{1}{|Q_j|}\sum_{(x,y)\in Q_j}\big(\beta^{*\top}\phi_\theta(x) - y\big)^2
+\;+\; \frac{1}{|B_i|}\sum_{(x,y)\in B_i}\big(\beta_0^\top \phi_\theta(x) - y\big)^2
+\;+\; \lambda_D \cdot \mathrm{DARE}\big(B_i, B_j\big).
+$$
+
+  これを Adam で 1 step．$(\theta, \beta_0)$ が同時に更新される．
+
+- **Test-time adaptation との整合**: 4 適応手法のうち `inner` は
+  **訓練時の inner rule をそのまま** 同じハイパーパラメータで test 側でも呼ぶ．
+  `create_graph=False` のみが違うので，**train と test の inner 作用素は関数として厳密一致**
+  (`tests/training/test_geohead.py::test_geohead_training_inner_rule_matches_test_time_inner_rule` で担保)．
+- **役割**: support → 仮想 head 更新 → query での真の更新，という
+  **bilevel 構造そのもの**が，DARE 単独 (B2) や source-only (B1) を超える表現を生むかを検証．
+
+### 8.5 4 つの test-time 適応手法（§4.3 と同じ）
 
 | method | head 更新規則 | $\beta_0$ への依存 | closed-form? |
 |---|---|---|---|
 | `none`  | $\hat\beta = \beta_0$ | 完全に依存（動かない） | — |
 | `ridge` | $(Z_S^\top Z_S + \lambda I)^{-1} Z_S^\top y_S$ | **無し**（$\beta_0$ 無視） | ✓ |
 | `geo`   | $\beta_0 + (Z_S^\top Z_S + \lambda H)^{-1} Z_S^\top (y_S - Z_S\beta_0)$ | あり | ✓ |
-| `inner` | preconditioned GD 5 step．§4.3 の inner objective | あり（正則化項経由） | ✗ |
+| `inner` | preconditioned GD 5 step．§4.3 の inner objective | あり (正則化項経由) | ✗ |
 
 ここで $H = \hat\Sigma_S + \varepsilon I$．`inner` のハイパーパラメータ
 $(\lambda_h, \eta, K, \varepsilon, \text{preconditioned})$ は GeoHead 学習時の inner と
 **完全一致**させて呼ぶ（`EvalConfig` の `inner_*` フィールド）．
 
-### 8.5 学習量の非対称性に関する重要な注意
-
-3 学習者の **勾配ステップ数とサンプル消費量** は厳密には等しくない：
+### 8.6 サンプル消費量（unified episode 採用後）
 
 | 項目 | B1 | B2 | P |
 |---|---|---|---|
-| Phase 0 (warm-up) ステップ | 720 | 720 | 720 |
-| Phase 1 (outer) ステップ | **0** | 5,000 | 5,000 |
-| 合計勾配ステップ | **720** | 5,720 | 5,720 |
-| Phase 1 の 1 step 消費サンプル数 | — | 128 | 224 |
-| 合計サンプル消費量 (sample-pass) | 180,000 | 820,000 | 1,300,000 |
+| Phase 0 step | 720 | 720 | 720 |
+| Phase 1 outer step | 5,000 | 5,000 | 5,000 |
+| **合計勾配 step** | **5,720** | **5,720** | **5,720** |
+| 1 step あたり raw サンプル | 224 | 224 | 224 |
+| **合計 sample-pass** | **約 130 万** | **約 130 万** | **約 130 万** |
+| ラベル使用 split | $S_i, B_i, Q_j, B_j$（全部） | $S_i, B_i$（96 個） | $S_i$ (inner), $Q_j, B_i$ (outer) |
+| feature のみ使用 | — | $Q_j, B_j$（DARE target 側） | $B_j$（DARE target 側） |
 
-つまり「同じ training データ条件」とは「**同じデータプールから引いている**」という
-意味であって，「**同じ予算で勾配を回している**」という意味ではない．
+**勾配 step 数とサンプル系列は完全一致**．差は「**取り出した同じ raw データを,各損失が
+どう使うか**」だけ．これにより `B2 vs P` の差は **bilevel 構造の効果**として，
+`B1 vs B2` の差は **DARE-GRAM 整列の効果**として，それぞれ純粋に切り出せる．
 
-この非対称性の影響：
+### 8.7 実装 TODO（M5 で揃える）
 
-- **B1 は Phase 1 を持たない**が，warm-up 終了時の train MSE が 0.020 程度（noise floor の
-  約 8 倍）まで落ちており，**source MSE 単体に関してはほぼ収束**しているため，追加で
-  単純 supervised SGD を回しても質的な改善は期待しにくい．
-- **B2 と P の outer ステップ数は同一**．唯一の差は 1 step あたりのサンプル数
-  （128 vs 224）と損失関数の構造．
+1. `src/geohead/data/episode.py::sample_episode` を `(S, B_src, Q, B_tgt)` の **4 split 同時抽出版**
+   に拡張（既存の `EpisodeBatch` を superset 化）．
+2. `baseline_train` (B2) を新インタフェースに移植: `S_i ∪ B_i` を source MSE,
+   `Q_j ∪ B_j` を target features として DARE．
+3. `geohead_train` (P) は今の 4 split をそのまま使うので変更最小．
+4. 新しく `b1_train` を追加（実体は `warmup_train` の episode 版 = 1 step ごとに episode から
+   pooled MSE を取るだけ）．
+5. `_run_pipeline_once` で **3 学習者に同じ master seed の RNG を渡す**．
+   episode index 系列が完全に共有されることを `tests/training/test_unified_sampling.py` で担保．
 
-この点を厳密に詰めたい場合の ablation は §8.6 に列挙．
+### 8.8 追加 ablation（時間が許せば）
 
-### 8.6 追加 ablation（時間が許せば）
-
-| Variant | warm-up | Phase 1 | 内容 | 目的 |
-|---|---|---|---|---|
-| `B1+` | あり | あり (5000 step pure MSE) | B1 を outer_steps=5000 だけ追加 supervised で回す | B1 の劣位が「ステップ不足」ではなく「source-MSE 単独の本質的限界」であることの検証 |
-| `P w/o DARE` | あり | あり | P から $\lambda_D$ 項を 0 に | DARE-GRAM 整列の必要性 |
-| `P w/o headreg` | あり | あり | inner 正則化を naive ridge に | geometry-aware reg の必要性 |
-| `P first-order` | あり | あり | inner の 2 階微分を切る | 2 階微分の貢献 |
-| `P full-MAML` | あり | あり | encoder も inner で更新 | ANIL vs full MAML |
-| `P single-source` | $D_1$ のみ | $D_1$ 内 split | 学習コーパス 1 つだけ | multi-source の必要性 |
-| `λ_h sweep` | あり | あり | $\lambda_h \in \{0, 10^{-4}, 10^{-3}, 10^{-2}, 10^{-1}\}$ | head 正則化の効きと B2 の "head norm blow-up" の修復 |
-| `inner_steps sweep` | あり | あり | inner $K \in \{1, 3, 5, 10\}$，preconditioned on/off | inner の効きと preconditioner の必要性 |
-| `unified-batch` | あり | あり | 1 step あたり A=32, B=64 の 2 batch を 3 学習者で完全共有．予算を厳密に揃える | データ予算厳密一致での fair comparison |
+| Variant | 内容 | 目的 |
+|---|---|---|
+| `P w/o DARE` | P から $\lambda_D$ 項を 0 に | DARE-GRAM 整列の必要性 |
+| `P w/o headreg` | inner 正則化を naive ridge に | geometry-aware reg の必要性 |
+| `P first-order` | inner の 2 階微分を切る | 2 階微分の貢献 |
+| `P full-MAML` | encoder も inner で更新 | ANIL vs full MAML |
+| `P single-source` | 学習コーパス 1 つだけ | multi-source の必要性 |
+| `λ_h sweep` | $\lambda_h \in \{0, 10^{-4}, 10^{-3}, 10^{-2}, 10^{-1}\}$ | head 正則化の効きと B2 の "head norm blow-up" の修復 |
+| `inner_steps sweep` | inner $K \in \{1, 3, 5, 10\}$,preconditioned on/off | inner の効きと preconditioner の必要性 |
+| `Phase 1 step sweep` | 5000 → {1k, 5k, 10k, 20k} | 学習量に対するスケーリング |
 
 ---
 
@@ -710,7 +740,7 @@ GeoHead-Adaptation-for-Few-shot-Regression/
 │   ├── training/
 │   │   ├── __init__.py                  [x]
 │   │   ├── warmup.py                    [x]  §4.2 pooled supervised MSE
-│   │   ├── baseline.py                  [x]  §8.1 DARE+ridge 学習ループ
+│   │   ├── baseline.py                  [x]  §8.3 B2 (DARE-GRAM) 学習ループ
 │   │   └── geohead.py                   [x]  §4 bilevel meta-trainer (ANIL + DARE)
 │   ├── evaluation/                      [x]  §9 eval suite
 │   │   ├── __init__.py                  [x]
@@ -747,7 +777,7 @@ GeoHead-Adaptation-for-Few-shot-Regression/
 - `training/geohead.py` は当初 `higher` 依存を想定していたが，**head-only ANIL
   では外部ライブラリなしで同じ差分可能展開が書ける**ため，
   `torch.autograd.grad(..., create_graph=True)` のみで実装．train/test で
-  inner rule が厳密一致する利点（§8.3）も得られる．
+  inner rule が厳密一致する利点（§8.4）も得られる．
 - `tests/` は機能別サブディレクトリに整理（`tests/<module>/test_*.py`）．
 
 ---
@@ -952,9 +982,9 @@ method ranking（learner 内 Borda 平均，n=10 セル）：
 - **inner の $\hat\Sigma$ 推定**: support のみ ($k=1$ だと退化)，support+unlabeled batch，
   または $\hat\Sigma_i$（全 corpus の pool）の 3 候補．test 時は support から推定するため，
   train/test で整合させる．
-- **Baseline 1 の $\lambda_D$**: §8.1 では敢えて総損失を $L_{\text{src}} + \alpha L_{\cos} + \gamma L_{\text{scale}}$
+- **B2 (DARE-GRAM) の $\lambda_D$**: §8.3 では敢えて総損失を $L_{\text{src}} + \alpha L_{\cos} + \gamma L_{\text{scale}}$
   と定義し，$\lambda_D$ を掛けない（$\alpha_{\cos}, \gamma_{\text{scale}}$ 自身で重み調整）．
-  GeoHead outer の $\lambda_D$ とは別概念であることに注意．baseline の実装は
+  GeoHead outer の $\lambda_D$ とは別概念であることに注意．B2 の実装は
   この方針に沿う（`BaselineConfig` に `lambda_D` を持たない）．
 - **Test corpus の support/query pre-split**: `build_toy_dataset` は $T_k$ の生成時に
   support pool 200 と query pool 1000 を別シードで独立生成している（§6.4 データ API）．
