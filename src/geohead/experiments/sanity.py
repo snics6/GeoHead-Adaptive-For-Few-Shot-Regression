@@ -5,11 +5,18 @@ Implements ``docs/design.md`` §12 (M3).
 Three learners share a **single** warm-up checkpoint (so every arm starts
 from the same ``(θ, β_0)``):
 
-* ``B1`` — source-only: warm-up alone.
-* ``B2`` — DARE+ridge (§8.1): warm-up, then
+* ``B1`` — source-only on the unified episode (§8.2): warm-up, then
+  :func:`geohead.training.b1.b1_train`.
+* ``B2`` — DARE-GRAM on the unified episode (§8.3): warm-up, then
   :func:`geohead.training.baseline.baseline_train`.
 * ``P``  — GeoHead (proposed, §4.3–§4.5): warm-up, then
   :func:`geohead.training.geohead.geohead_train`.
+
+All three Phase 1 trainers are seeded with the **same**
+``torch.Generator`` state (``master_seed + 3``); since each call freshly
+rebuilds the generator and consumes 1 randint + 2 randperms per step,
+the raw episode index sequence is bit-identical across learners
+(§8.0 fairness protocol).
 
 Every learner is then evaluated with the full 4-method test-time
 adaptation matrix (``none / ridge / geo / inner``) on ``{T_1, T_2}`` via
@@ -59,6 +66,11 @@ from geohead.evaluation.visualize import (
 )
 from geohead.models.encoder import MLPEncoder
 from geohead.models.head import LinearHead
+from geohead.training.b1 import (
+    B1Config,
+    B1History,
+    b1_train,
+)
 from geohead.training.baseline import (
     BaselineConfig,
     BaselineHistory,
@@ -146,12 +158,32 @@ def _default_warmup() -> WarmupConfig:
     return WarmupConfig(epochs=30, batch_size=256, lr=1e-3)
 
 
+def _default_b1() -> B1Config:
+    """Defaults for B1 (source-only on the unified episode, §8.2).
+
+    Mirrors :func:`_default_baseline` for ``outer_steps``, ``lr``, and
+    ``log_every`` plus the four episode batch sizes — necessary so that
+    B1 / B2 / P consume the shared episode generator at the same rate.
+    """
+    return B1Config(
+        outer_steps=1500,
+        lr=1e-3,
+        support_size=32,
+        query_size=64,
+        batch_source_size=64,
+        batch_target_size=64,
+        log_every=50,
+    )
+
+
 def _default_baseline() -> BaselineConfig:
     return BaselineConfig(
         outer_steps=1500,
         lr=1e-3,
-        batch_size_source=64,
-        batch_size_target=64,
+        support_size=32,
+        query_size=64,
+        batch_source_size=64,
+        batch_target_size=64,
         alpha_cos=0.01,
         gamma_scale=1e-4,
         log_every=50,
@@ -247,6 +279,7 @@ class SanityConfig:
 
     # Training schedules
     warmup: WarmupConfig = field(default_factory=_default_warmup)
+    b1: B1Config = field(default_factory=_default_b1)
     baseline: BaselineConfig = field(default_factory=_default_baseline)
     geohead: GeoHeadConfig = field(default_factory=_default_geohead)
 
@@ -402,7 +435,7 @@ def _snapshot_state(
 
 
 _LEARNER_HISTORY_FILENAME = {
-    "B1": "baseline_source_only.json",
+    "B1": "b1.json",
     "B2": "baseline.json",
     "P": "geohead.json",
 }
@@ -436,9 +469,9 @@ def _run_pipeline_once(
         Target torch device.
     history_dir:
         If provided, per-learner training histories (``warmup.json``,
-        ``baseline.json``, ``geohead.json``, ``baseline_source_only.json``)
-        are written under this directory.  ``None`` skips disk I/O —
-        useful for tests or when the caller collects histories in memory.
+        ``b1.json``, ``baseline.json``, ``geohead.json``) are written
+        under this directory.  ``None`` skips disk I/O — useful for
+        tests or when the caller collects histories in memory.
 
     Returns
     -------
@@ -488,11 +521,23 @@ def _run_pipeline_once(
         )
         _load_state(enc_i, head_i, warm_state)
 
+        # Unified-sampling fairness (§8.0): all three learners are seeded
+        # with the *same* Phase 1 generator state.  Each call freshly
+        # rebuilds the generator from ``master_seed + 3``, so B1 / B2 / P
+        # consume identical (i, j, S, B_i, Q, B_j) sequences.  This makes
+        # ``L_{B2} - L_{B1}`` exactly the DARE-GRAM contribution.
         history: Any
+        gen = _make_gen(master_seed + 3)
         if learner == "B1":
-            history = {"note": "warm-up only; no extra training"}
+            history = b1_train(
+                enc_i,
+                head_i,
+                ds.train,
+                config=config.b1,
+                generator=gen,
+                device=device,
+            )
         elif learner == "B2":
-            gen = _make_gen(master_seed + 3)
             history = baseline_train(
                 enc_i,
                 head_i,
@@ -502,7 +547,6 @@ def _run_pipeline_once(
                 device=device,
             )
         elif learner == "P":
-            gen = _make_gen(master_seed + 4)
             history = geohead_train(
                 enc_i,
                 head_i,

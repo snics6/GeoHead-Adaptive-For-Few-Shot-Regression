@@ -28,7 +28,7 @@ papers (cf. Gulrajani & Lopez-Paz, 2021).
 Outputs (written under ``output_dir``)::
 
     config.json                              # M4Config (JSON-serialised)
-    run_0/history/{warmup,baseline,geohead,baseline_source_only}.json
+    run_0/history/{warmup,b1,baseline,geohead}.json
     run_1/history/...
     ...
     records.jsonl                            # all rows, tagged with "train_seed"
@@ -65,6 +65,7 @@ from geohead.experiments.sanity import (
     _default_toy,
     _default_warmup,
 )
+from geohead.training.b1 import B1Config, B1History
 from geohead.training.baseline import BaselineConfig, BaselineHistory
 from geohead.training.geohead import GeoHeadConfig, GeoHeadHistory
 from geohead.training.warmup import WarmupConfig, WarmupHistory
@@ -87,13 +88,32 @@ __all__ = [
 _TRAIN_SEED_STRIDE = 1_000_000
 
 
+def _default_b1_m4() -> B1Config:
+    # v5 (unified-episode) B1: 5 000 steps of pooled supervised MSE on the
+    # shared (S, B_i, Q, B_j) episode.  Episode batch sizes match B2 / P
+    # so the three learners consume the shared generator identically.
+    return B1Config(
+        outer_steps=5000,
+        lr=1e-3,
+        support_size=32,
+        query_size=64,
+        batch_source_size=64,
+        batch_target_size=64,
+        log_every=200,
+    )
+
+
 def _default_baseline_m4() -> BaselineConfig:
-    # v8 hyperparameters + 5 000 outer_steps (M3 used 1 500).
+    # v5 (unified-episode) hyperparameters + 5 000 outer_steps.  Episode
+    # batch sizes match :func:`_default_geohead_m4` so all three learners
+    # share the same episode RNG consumption pattern (§8.0).
     return BaselineConfig(
         outer_steps=5000,
         lr=1e-3,
-        batch_size_source=64,
-        batch_size_target=64,
+        support_size=32,
+        query_size=64,
+        batch_source_size=64,
+        batch_target_size=64,
         alpha_cos=0.01,
         gamma_scale=1e-4,
         log_every=200,
@@ -162,6 +182,7 @@ class M4Config:
 
     # Training schedules (M4 defaults — longer than M3).
     warmup: WarmupConfig = field(default_factory=_default_warmup)
+    b1: B1Config = field(default_factory=_default_b1_m4)
     baseline: BaselineConfig = field(default_factory=_default_baseline_m4)
     geohead: GeoHeadConfig = field(default_factory=_default_geohead_m4)
 
@@ -220,6 +241,7 @@ class M4Config:
             encoder_hidden=tuple(self.encoder_hidden),
             encoder_p=self.encoder_p,
             warmup=copy.deepcopy(self.warmup),
+            b1=copy.deepcopy(self.b1),
             baseline=copy.deepcopy(self.baseline),
             geohead=copy.deepcopy(self.geohead),
             eval=copy.deepcopy(self.eval),

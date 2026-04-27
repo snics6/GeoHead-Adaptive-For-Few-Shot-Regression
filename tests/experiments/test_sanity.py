@@ -51,8 +51,10 @@ def _tiny_config(
         warmup=WarmupConfig(epochs=1, batch_size=128, lr=1e-3),
         baseline=BaselineConfig(
             outer_steps=5,
-            batch_size_source=16,
-            batch_size_target=16,
+            support_size=8,
+            query_size=16,
+            batch_source_size=16,
+            batch_target_size=16,
             log_every=5,
         ),
         geohead=GeoHeadConfig(
@@ -121,7 +123,7 @@ def test_run_sanity_check_creates_all_artefacts(tmp_path: Path) -> None:
     assert (tmp_path / "summary.md").exists()
     # Histories
     assert (tmp_path / "history" / "warmup.json").exists()
-    assert (tmp_path / "history" / "baseline_source_only.json").exists()
+    assert (tmp_path / "history" / "b1.json").exists()
     assert (tmp_path / "history" / "baseline.json").exists()
     assert (tmp_path / "history" / "geohead.json").exists()
     # Plots: at least one per corpus × learner, plus per-method view
@@ -198,7 +200,7 @@ def test_run_sanity_check_subset_learners(tmp_path: Path) -> None:
     # B2/P histories should NOT be written if their learners are not asked.
     assert not (tmp_path / "history" / "baseline.json").exists()
     assert not (tmp_path / "history" / "geohead.json").exists()
-    assert (tmp_path / "history" / "baseline_source_only.json").exists()
+    assert (tmp_path / "history" / "b1.json").exists()
 
 
 def test_run_sanity_check_aggregated_has_expected_keys(tmp_path: Path) -> None:

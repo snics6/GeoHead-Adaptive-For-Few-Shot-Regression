@@ -34,6 +34,7 @@ from geohead.experiments.main import (
     run_main_experiment,
 )
 from geohead.experiments.sanity import LEARNERS
+from geohead.training.b1 import B1Config
 from geohead.training.baseline import BaselineConfig
 from geohead.training.geohead import GeoHeadConfig
 from geohead.training.warmup import WarmupConfig
@@ -89,6 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--n-seeds", type=int, default=None,
                    help="eval.n_seeds per train-seed run.")
     p.add_argument("--warmup-epochs", type=int, default=None)
+    p.add_argument("--b1-outer-steps", type=int, default=None)
     p.add_argument("--baseline-outer-steps", type=int, default=None)
     p.add_argument("--geohead-outer-steps", type=int, default=None)
     return p
@@ -98,12 +100,15 @@ def _apply_overrides(
     config: M4Config, args: argparse.Namespace
 ) -> M4Config:
     warmup = config.warmup
+    b1 = config.b1
     baseline = config.baseline
     geohead = config.geohead
     eval_ = config.eval
 
     if args.warmup_epochs is not None:
         warmup = dataclasses.replace(warmup, epochs=int(args.warmup_epochs))
+    if args.b1_outer_steps is not None:
+        b1 = dataclasses.replace(b1, outer_steps=int(args.b1_outer_steps))
     if args.baseline_outer_steps is not None:
         baseline = dataclasses.replace(
             baseline, outer_steps=int(args.baseline_outer_steps)
@@ -117,6 +122,7 @@ def _apply_overrides(
 
     kwargs: dict = dict(
         warmup=warmup,
+        b1=b1,
         baseline=baseline,
         geohead=geohead,
         eval=eval_,
@@ -133,10 +139,20 @@ def _apply_overrides(
 def _smoke_config(base: M4Config) -> M4Config:
     """Tiny schedule for ``--smoke`` (~30 s CPU)."""
     warmup = WarmupConfig(epochs=2, batch_size=128, lr=1e-3)
+    b1 = B1Config(
+        outer_steps=50,
+        support_size=16,
+        query_size=32,
+        batch_source_size=32,
+        batch_target_size=32,
+        log_every=25,
+    )
     baseline = BaselineConfig(
         outer_steps=50,
-        batch_size_source=32,
-        batch_size_target=32,
+        support_size=16,
+        query_size=32,
+        batch_source_size=32,
+        batch_target_size=32,
         log_every=25,
     )
     geohead = GeoHeadConfig(
@@ -155,6 +171,7 @@ def _smoke_config(base: M4Config) -> M4Config:
         n_test_support=50,
         n_test_query=200,
         warmup=warmup,
+        b1=b1,
         baseline=baseline,
         geohead=geohead,
         eval=eval_,
@@ -185,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  eval.n_seeds      = {config.eval.n_seeds}")
     print(f"  samples per cell  = {n_samples}  (= n_train_seeds × n_seeds)")
     print(f"  warmup.epochs     = {config.warmup.epochs}")
+    print(f"  b1.steps          = {config.b1.outer_steps}")
     print(f"  baseline.steps    = {config.baseline.outer_steps}")
     print(f"  geohead.steps     = {config.geohead.outer_steps}")
     print(f"  eval.k_shots      = {list(config.eval.k_shots)}")

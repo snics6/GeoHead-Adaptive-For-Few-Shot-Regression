@@ -56,9 +56,13 @@ def test_baseline_config_validation() -> None:
     with pytest.raises(ValueError):
         BaselineConfig(lr=0)
     with pytest.raises(ValueError):
-        BaselineConfig(batch_size_source=0)
+        BaselineConfig(support_size=0)
     with pytest.raises(ValueError):
-        BaselineConfig(batch_size_target=-1)
+        BaselineConfig(query_size=-1)
+    with pytest.raises(ValueError):
+        BaselineConfig(batch_source_size=0)
+    with pytest.raises(ValueError):
+        BaselineConfig(batch_target_size=-1)
     with pytest.raises(ValueError):
         BaselineConfig(alpha_cos=-0.1)
     with pytest.raises(ValueError):
@@ -89,8 +93,10 @@ def test_baseline_train_updates_params_in_place() -> None:
     cfg = BaselineConfig(
         outer_steps=20,
         lr=1e-2,
-        batch_size_source=32,
-        batch_size_target=32,
+        support_size=16,
+        query_size=32,
+        batch_source_size=32,
+        batch_target_size=32,
         log_every=5,
     )
     g = torch.Generator().manual_seed(0)
@@ -137,8 +143,10 @@ def test_baseline_train_total_loss_decreases() -> None:
     cfg = BaselineConfig(
         outer_steps=400,
         lr=1e-2,
-        batch_size_source=48,
-        batch_size_target=48,
+        support_size=24,
+        query_size=48,
+        batch_source_size=48,
+        batch_target_size=48,
         log_every=50,
     )
     g = torch.Generator().manual_seed(0)
@@ -202,8 +210,10 @@ def test_baseline_train_runs_on_toy_dataset() -> None:
     cfg = BaselineConfig(
         outer_steps=30,
         lr=1e-3,
-        batch_size_source=64,
-        batch_size_target=64,
+        support_size=32,
+        query_size=64,
+        batch_source_size=64,
+        batch_target_size=64,
         log_every=10,
     )
     g = torch.Generator().manual_seed(0)
@@ -256,8 +266,10 @@ def test_baseline_output_is_usable_for_test_time_ridge_adapt() -> None:
     cfg = BaselineConfig(
         outer_steps=50,
         lr=1e-3,
-        batch_size_source=64,
-        batch_size_target=64,
+        support_size=32,
+        query_size=64,
+        batch_source_size=64,
+        batch_target_size=64,
         log_every=25,
     )
     g = torch.Generator().manual_seed(0)

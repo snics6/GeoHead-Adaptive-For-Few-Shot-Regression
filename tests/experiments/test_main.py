@@ -55,8 +55,10 @@ def _tiny_config(
         warmup=WarmupConfig(epochs=1, batch_size=128, lr=1e-3),
         baseline=BaselineConfig(
             outer_steps=5,
-            batch_size_source=16,
-            batch_size_target=16,
+            support_size=8,
+            query_size=16,
+            batch_source_size=16,
+            batch_target_size=16,
             log_every=5,
         ),
         geohead=GeoHeadConfig(
@@ -159,7 +161,7 @@ def test_run_main_experiment_creates_expected_layout(tmp_path: Path) -> None:
         assert run_dir.is_dir()
         assert (run_dir / "config.json").exists()
         assert (run_dir / "history" / "warmup.json").exists()
-        assert (run_dir / "history" / "baseline_source_only.json").exists()
+        assert (run_dir / "history" / "b1.json").exists()
         assert (run_dir / "history" / "baseline.json").exists()
         assert (run_dir / "history" / "geohead.json").exists()
     # At least one plot written

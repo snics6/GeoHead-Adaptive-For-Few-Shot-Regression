@@ -32,6 +32,7 @@ from geohead.experiments.sanity import (
     SanityConfig,
     run_sanity_check,
 )
+from geohead.training.b1 import B1Config
 from geohead.training.baseline import BaselineConfig
 from geohead.training.geohead import GeoHeadConfig
 from geohead.training.warmup import WarmupConfig
@@ -83,6 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Schedule overrides (in case the user wants to tune without editing code).
     p.add_argument("--warmup-epochs", type=int, default=None)
+    p.add_argument("--b1-outer-steps", type=int, default=None)
     p.add_argument("--baseline-outer-steps", type=int, default=None)
     p.add_argument("--geohead-outer-steps", type=int, default=None)
     p.add_argument("--n-seeds", type=int, default=None)
@@ -94,12 +96,15 @@ def _apply_overrides(
 ) -> SanityConfig:
     """Return a new config with CLI overrides applied."""
     warmup = config.warmup
+    b1 = config.b1
     baseline = config.baseline
     geohead = config.geohead
     eval_ = config.eval
 
     if args.warmup_epochs is not None:
         warmup = dataclasses.replace(warmup, epochs=int(args.warmup_epochs))
+    if args.b1_outer_steps is not None:
+        b1 = dataclasses.replace(b1, outer_steps=int(args.b1_outer_steps))
     if args.baseline_outer_steps is not None:
         baseline = dataclasses.replace(
             baseline, outer_steps=int(args.baseline_outer_steps)
@@ -114,6 +119,7 @@ def _apply_overrides(
     return dataclasses.replace(
         config,
         warmup=warmup,
+        b1=b1,
         baseline=baseline,
         geohead=geohead,
         eval=eval_,
@@ -126,10 +132,20 @@ def _apply_overrides(
 def _smoke_config(base: SanityConfig) -> SanityConfig:
     """Tiny schedule for the ``--smoke`` flag (≈10 s on CPU)."""
     warmup = WarmupConfig(epochs=2, batch_size=128, lr=1e-3)
+    b1 = B1Config(
+        outer_steps=30,
+        support_size=16,
+        query_size=32,
+        batch_source_size=32,
+        batch_target_size=32,
+        log_every=10,
+    )
     baseline = BaselineConfig(
         outer_steps=30,
-        batch_size_source=32,
-        batch_size_target=32,
+        support_size=16,
+        query_size=32,
+        batch_source_size=32,
+        batch_target_size=32,
         log_every=10,
     )
     geohead = GeoHeadConfig(
@@ -150,6 +166,7 @@ def _smoke_config(base: SanityConfig) -> SanityConfig:
         n_test_support=50,
         n_test_query=200,
         warmup=warmup,
+        b1=b1,
         baseline=baseline,
         geohead=geohead,
         eval=eval_,
@@ -175,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  device           = {config.device}")
     print(f"  learners         = {list(config.learners)}")
     print(f"  warmup.epochs    = {config.warmup.epochs}")
+    print(f"  b1.steps         = {config.b1.outer_steps}")
     print(f"  baseline.steps   = {config.baseline.outer_steps}")
     print(f"  geohead.steps    = {config.geohead.outer_steps}")
     print(f"  eval.k_shots     = {list(config.eval.k_shots)}")

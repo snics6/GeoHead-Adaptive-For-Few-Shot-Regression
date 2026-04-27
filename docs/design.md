@@ -530,21 +530,23 @@ $$
 
 - **Phase 0**: 共通．
 - **Phase 1**: `outer_steps=5000`．各 step で共有 episode を取り,
+  **B1 と同じ pooled MSE** に DARE-GRAM 整列項を加える:
 
 $$
-L_{B_2}(t) = \underbrace{\frac{1}{|S_i \cup B_i|}\sum_{(x,y) \in S_i \cup B_i} \big(\beta^\top \phi_\theta(x) - y\big)^2}_{L_{\text{src}}}
+L_{B_2}(t) = \underbrace{\frac{1}{224}\sum_{(x,y) \in S_i \cup B_i \cup Q_j \cup B_j} \big(\beta^\top \phi_\theta(x) - y\big)^2}_{= L_{B_1}(t)}
 \;+\; \alpha_{\cos} L_{\cos}\big(Z_{S_i \cup B_i},\, Z_{Q_j \cup B_j}\big)
 \;+\; \gamma_{\text{scale}} L_{\text{scale}}\big(\cdot\big).
 $$
 
   ここで $L_{\cos}, L_{\text{scale}}$ は §3 の DARE-GRAM 整列項（inverse Gram の cosine と
-  最大固有値の log 比二乗）．**ラベルは source 側 96 サンプル分のみ** 使用，target 側は
-  feature だけ DARE で使う．
+  最大固有値の log 比二乗）．DARE 側は source = $Z_{S_i \cup B_i}$（96 サンプル），
+  target = $Z_{Q_j \cup B_j}$（128 サンプル）の **特徴のみ**を使う．
+  pooled MSE 部分の **ラベルは 224 個全部** 使用．
 
 - **何が無いか**: support/query を分けた仮想更新は無し（**MAML/bilevel ではない**）．
   単一の outer 損失を Adam で 1 step．
-- **役割**: 既存の代表的 UDA 回帰手法．meta-learning なしで
-  「**特徴の幾何**だけを揃える」ことの効果を測る．
+- **役割**: $L_{B_2} - L_{B_1} = \alpha L_{\cos} + \gamma L_{\text{scale}}$ で
+  **DARE-GRAM 整列項単独の効果**を切り出す．
 
 ### 8.4 学習者 P: GeoHead（提案手法）
 
@@ -593,12 +595,16 @@ $(\lambda_h, \eta, K, \varepsilon, \text{preconditioned})$ は GeoHead 学習時
 | **合計勾配 step** | **5,720** | **5,720** | **5,720** |
 | 1 step あたり raw サンプル | 224 | 224 | 224 |
 | **合計 sample-pass** | **約 130 万** | **約 130 万** | **約 130 万** |
-| ラベル使用 split | $S_i, B_i, Q_j, B_j$（全部） | $S_i, B_i$（96 個） | $S_i$ (inner), $Q_j, B_i$ (outer) |
-| feature のみ使用 | — | $Q_j, B_j$（DARE target 側） | $B_j$（DARE target 側） |
+| ラベル使用 split | $S_i, B_i, Q_j, B_j$（全 224 個） | $S_i, B_i, Q_j, B_j$（全 224 個） | $S_i$ (inner), $Q_j, B_i$ (outer) |
+| feature のみ使用 | — | $Q_j \cup B_j$（DARE target 128 個） | $B_j$（DARE target 64 個） |
 
 **勾配 step 数とサンプル系列は完全一致**．差は「**取り出した同じ raw データを,各損失が
-どう使うか**」だけ．これにより `B2 vs P` の差は **bilevel 構造の効果**として，
-`B1 vs B2` の差は **DARE-GRAM 整列の効果**として，それぞれ純粋に切り出せる．
+どう使うか**」だけ．これにより:
+
+- **B1 vs B2** の差 = `α L_cos + γ L_scale` のみ → **DARE-GRAM 整列項の純粋な効果**
+- **B2 vs P** の差 = bilevel 構造（inner head update + 区別された L_qry/L_src）→ **meta-learning 構造の効果**
+
+の二段階で純粋に切り出せる．
 
 ### 8.7 実装 TODO（M5 で揃える）
 
